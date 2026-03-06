@@ -1,14 +1,16 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useFile, useFileVersions } from '@/hooks/useFiles'
 import { useSigning } from '@/hooks/useSigning'
 import { useShareLinks } from '@/hooks/useShareLinks'
 import { useFilePermissions, usePermissionMutations } from '@/hooks/usePermissions'
+import { useCrypto } from '@/hooks/useCrypto'
 import { filesApi } from '@/lib/api'
 import { PassphraseModal } from '@/components/PassphraseModal'
+import { VersionHistory } from '@/components/VersionHistory'
 
 export default function FileDetailPage() {
   const params = useParams<{ id: string }>()
@@ -17,6 +19,7 @@ export default function FileDetailPage() {
 
   const { file, isLoading } = useFile(id)
   const { versions } = useFileVersions(id)
+  const { uploadNewVersion } = useCrypto()
   const {
     signatures,
     signFileAction,
@@ -28,6 +31,9 @@ export default function FileDetailPage() {
   const { grantPermission, revokePermission } = usePermissionMutations()
 
   const [modal, setModal] = useState<'sign' | null>(null)
+  const [showVersionHistory, setShowVersionHistory] = useState(false)
+  const [uploadVersionComment, setUploadVersionComment] = useState('')
+  const uploadVersionInputRef = useRef<HTMLInputElement>(null)
   const [shareLabel, setShareLabel] = useState('')
   const [sharePassword, setSharePassword] = useState('')
   const [shareExpiry, setShareExpiry] = useState('')
@@ -120,14 +126,60 @@ export default function FileDetailPage() {
 
       <section data-testid="versions-section">
         <h2>Versioni</h2>
+        <button
+          type="button"
+          data-testid="open-version-history"
+          onClick={() => setShowVersionHistory(true)}
+        >
+          Apri cronologia versioni
+        </button>
         {versions.length === 0 && <p>Nessuna versione.</p>}
         <ul>
           {versions.map((v) => (
             <li key={v.version_number} data-testid="version-item">
-              v{v.version_number} — {new Date(v.created_at).toLocaleString('it')}
+              v{v.version_number}
+              {v.is_current && ' (corrente)'}
+              {' — '}
+              {(v.size / 1024).toFixed(1)} KB — {new Date(v.created_at).toLocaleString('it')}
+              {v.comment && ` — ${v.comment}`}
             </li>
           ))}
         </ul>
+        <h3>Carica nuova versione</h3>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault()
+            const input = uploadVersionInputRef.current
+            const selectedFile = input?.files?.[0]
+            if (!selectedFile) {
+              setStatusMsg('Seleziona un file.')
+              return
+            }
+            const result = await uploadNewVersion(id, selectedFile, uploadVersionComment || undefined)
+            if (result) {
+              setStatusMsg(`Nuova versione caricata: v${result.version}`)
+              setUploadVersionComment('')
+              if (input) input.value = ''
+            }
+          }}
+        >
+          <input
+            ref={uploadVersionInputRef}
+            type="file"
+            required
+            data-testid="upload-new-version-input"
+          />
+          <input
+            type="text"
+            value={uploadVersionComment}
+            onChange={(e) => setUploadVersionComment(e.target.value)}
+            placeholder="Nota versione (opzionale)"
+            data-testid="version-comment-input"
+          />
+          <button type="submit" data-testid="upload-new-version-button">
+            Carica
+          </button>
+        </form>
       </section>
 
       <section data-testid="signature-section">
@@ -342,6 +394,14 @@ export default function FileDetailPage() {
           title="Passphrase per firmare"
           onConfirm={handleSign}
           onCancel={() => setModal(null)}
+        />
+      )}
+
+      {showVersionHistory && file && (
+        <VersionHistory
+          fileId={id}
+          fileName={file.name_encrypted}
+          onClose={() => setShowVersionHistory(false)}
         />
       )}
     </div>

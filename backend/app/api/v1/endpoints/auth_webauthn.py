@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from typing import Optional
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -28,7 +29,7 @@ REDIS_TTL = 300  # 5 min
 
 class RegisterBeginBody(BaseModel):
     email: str
-    display_name: str | None = None
+    display_name: Optional[str] = None
 
 
 class RegisterCompleteBody(BaseModel):

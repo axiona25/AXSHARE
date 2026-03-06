@@ -3,7 +3,9 @@ Upload/download file cifrati E2E — DEK e storage MinIO.
 Il server gestisce solo blob cifrati; metadati (nome, MIME) sono già cifrati lato client.
 """
 
+import asyncio
 import io
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -14,8 +16,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.event_bus import event_bus
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_current_user_sse
 from app.models.file import File as FileModel, FileVersion
 from app.models.permission import Permission, PermissionLevel
 from app.models.user import User
@@ -56,6 +59,36 @@ class FileUploadMetadata(BaseModel):
     folder_id: Optional[str] = None  # UUID cartella padre (opzionale)
     size_original: Optional[int] = None  # Dimensione originale (opzionale)
     mime_category: Optional[str] = None  # Categoria non cifrata: image|pdf|video|audio|document|archive
+    version_comment: Optional[str] = None  # Nota opzionale per nuova versione (solo upload versione)
+
+
+@router.get("/events")
+async def file_events(
+    current_user: User = Depends(get_current_user_sse),
+):
+    """Stream SSE di eventi file (creato/eliminato/modificato) per l'utente corrente."""
+    sub_id, queue = event_bus.subscribe(str(current_user.id))
+
+    async def generate():
+        try:
+            yield "data: " + json.dumps({"type": "connected"}) + "\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield "data: " + json.dumps(event) + "\n\n"
+                except asyncio.TimeoutError:
+                    yield "data: " + json.dumps({"type": "ping"}) + "\n\n"
+        finally:
+            event_bus.unsubscribe(sub_id)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(
@@ -118,6 +151,14 @@ async def upload_file(
     )
     db.add(file_record)
     await db.commit()
+    await event_bus.publish(
+        str(current_user.id),
+        {
+            "type": "file_created",
+            "file_id": str(file_record.id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     await AuditService.log_event(
         db,
         action=AuditAction.FILE_UPLOAD,
@@ -267,6 +308,7 @@ async def get_file_dek(
     return {
         "file_key_encrypted": file_key_encrypted,
         "encryption_iv": file.encryption_iv,
+        "mime_type_encrypted": file.mime_type_encrypted or "",
     }
 
 
@@ -290,7 +332,7 @@ async def upload_new_version(
 
     encrypted_data = await file.read()
 
-    # Salva vecchia versione come FileVersion
+    # Salva vecchia versione come FileVersion (versioning illimitato)
     old_version = FileVersion(
         file_id=file_id,
         version_number=existing.version,
@@ -298,6 +340,8 @@ async def upload_new_version(
         file_key_encrypted=existing.file_key_encrypted,
         encryption_iv=existing.encryption_iv,
         size_bytes=existing.size_bytes,
+        content_hash=existing.content_hash,
+        comment=meta.version_comment,
         created_by=current_user.id,
     )
     db.add(old_version)
@@ -322,6 +366,14 @@ async def upload_new_version(
         existing.content_hash = meta.content_hash
 
     await db.commit()
+    await event_bus.publish(
+        str(current_user.id),
+        {
+            "type": "file_updated",
+            "file_id": str(file_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     return {"version": existing.version}
 
 
@@ -331,22 +383,50 @@ async def list_versions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Elenco delle versioni precedenti (snapshot in FileVersion)."""
-    await _get_file_with_permission_check(file_id, current_user, db)
+    """Elenco di tutte le versioni (corrente da File + cronologia da FileVersion)."""
+    from sqlalchemy.orm import selectinload
+
+    file = await _get_file_with_permission_check(file_id, current_user, db)
+    # Carica owner per email versione corrente
+    await db.refresh(file, ["owner"])
     result = await db.execute(
         select(FileVersion)
         .where(FileVersion.file_id == file_id)
-        .order_by(FileVersion.version_number)
+        .options(selectinload(FileVersion.creator))
+        .order_by(FileVersion.version_number.desc())
     )
-    versions = result.scalars().all()
-    return [
-        {"version": v.version_number, "created_at": v.created_at.isoformat()}
-        for v in versions
+    history = result.scalars().all()
+
+    # Versione corrente (dati dal record File)
+    out = [
+        {
+            "version_number": file.version,
+            "size": file.size_bytes,
+            "created_at": file.updated_at.isoformat(),
+            "created_by_email": file.owner.email if file.owner else None,
+            "comment": None,
+            "is_current": True,
+        }
     ]
+    # Versioni storiche (da FileVersion)
+    for v in history:
+        out.append(
+            {
+                "version_number": v.version_number,
+                "size": v.size_bytes,
+                "created_at": v.created_at.isoformat(),
+                "created_by_email": v.creator.email if v.creator else None,
+                "comment": v.comment,
+                "is_current": False,
+            }
+        )
+    out.sort(key=lambda x: x["version_number"], reverse=True)
+    return out
 
 
 @router.post("/{file_id}/versions/{version_number}/restore")
 async def restore_version(
+    request: Request,
     file_id: uuid.UUID,
     version_number: int,
     current_user: User = Depends(get_current_user),
@@ -375,6 +455,7 @@ async def restore_version(
         file_key_encrypted=existing.file_key_encrypted,
         encryption_iv=existing.encryption_iv,
         size_bytes=existing.size_bytes,
+        content_hash=existing.content_hash,
         created_by=current_user.id,
     )
     db.add(old_current)
@@ -385,9 +466,140 @@ async def restore_version(
     existing.file_key_encrypted = to_restore.file_key_encrypted
     existing.encryption_iv = to_restore.encryption_iv
     existing.size_bytes = to_restore.size_bytes
+    if to_restore.content_hash is not None:
+        existing.content_hash = to_restore.content_hash
 
     await db.commit()
+    await AuditService.log_event(
+        db,
+        action=AuditAction.FILE_RESTORE,
+        actor=current_user,
+        resource_type="file",
+        resource_id=str(file_id),
+        details={"version_number": version_number},
+        request=request,
+    )
+    await event_bus.publish(
+        str(current_user.id),
+        {
+            "type": "file_updated",
+            "file_id": str(file_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     return {"restored_version": version_number}
+
+
+@router.get("/{file_id}/versions/{version_number}/key")
+async def get_version_key(
+    file_id: uuid.UUID,
+    version_number: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ritorna la DEK cifrata e IV per una versione specifica (per decifratura client)."""
+    file = await _get_file_with_permission_check(file_id, current_user, db)
+    if file.is_destroyed:
+        raise HTTPException(status_code=410, detail="File eliminato")
+    if version_number == file.version:
+        return {
+            "file_key_encrypted": file.file_key_encrypted,
+            "encryption_iv": file.encryption_iv,
+            "mime_type_encrypted": file.mime_type_encrypted or "",
+        }
+    result = await db.execute(
+        select(FileVersion).where(
+            FileVersion.file_id == file_id,
+            FileVersion.version_number == version_number,
+        )
+    )
+    ver = result.scalar_one_or_none()
+    if ver is None:
+        raise HTTPException(status_code=404, detail="Versione non trovata")
+    return {
+        "file_key_encrypted": ver.file_key_encrypted,
+        "encryption_iv": ver.encryption_iv,
+        "mime_type_encrypted": "",  # versioni storiche non hanno mime cifrato in tabella
+    }
+
+
+@router.get("/{file_id}/versions/{version_number}/download")
+async def download_version(
+    request: Request,
+    file_id: uuid.UUID,
+    version_number: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Scarica una versione specifica del file (cifrata)."""
+    file = await _get_file_with_permission_check(file_id, current_user, db)
+    if file.is_destroyed:
+        raise HTTPException(status_code=410, detail="File eliminato")
+
+    if version_number == file.version:
+        storage_path = file.storage_path
+        encryption_iv = file.encryption_iv
+    else:
+        result = await db.execute(
+            select(FileVersion).where(
+                FileVersion.file_id == file_id,
+                FileVersion.version_number == version_number,
+            )
+        )
+        ver = result.scalar_one_or_none()
+        if ver is None:
+            raise HTTPException(status_code=404, detail="Versione non trovata")
+        storage_path = ver.storage_path
+        encryption_iv = ver.encryption_iv
+
+    storage = get_storage_service()
+    encrypted_data = await storage.download_encrypted_file(storage_path)
+    return StreamingResponse(
+        io.BytesIO(encrypted_data),
+        media_type="application/octet-stream",
+        headers={"X-File-IV": encryption_iv},
+    )
+
+
+@router.delete("/{file_id}/versions/{version_number}")
+async def delete_version(
+    request: Request,
+    file_id: uuid.UUID,
+    version_number: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Elimina una versione specifica (non la corrente)."""
+    file = await _get_file_with_write_permission(file_id, current_user, db)
+    if version_number == file.version:
+        raise HTTPException(
+            status_code=400,
+            detail="Non è possibile eliminare la versione corrente",
+        )
+    result = await db.execute(
+        select(FileVersion).where(
+            FileVersion.file_id == file_id,
+            FileVersion.version_number == version_number,
+        )
+    )
+    ver = result.scalar_one_or_none()
+    if ver is None:
+        raise HTTPException(status_code=404, detail="Versione non trovata")
+
+    storage = get_storage_service()
+    await storage.delete_file_secure(ver.storage_path)
+    await db.delete(ver)
+    await db.commit()
+    await AuditService.log_event(
+        db,
+        action=AuditAction.FILE_VERSION_DELETE,
+        actor=current_user,
+        resource_type="file",
+        resource_id=str(file_id),
+        details={"version_number": version_number},
+        request=request,
+    )
+    return {"deleted": version_number}
 
 
 @router.post("/{file_id}/share-group")
@@ -427,6 +639,33 @@ async def set_self_destruct(
     )
 
 
+@router.delete("/cleanup-system-files")
+async def cleanup_system_files(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Elimina file di sistema/junk caricati per errore (piccoli file anomali: .DS_Store, file_, ~$, ecc.)."""
+    result = await db.execute(
+        select(FileModel).where(
+            FileModel.owner_id == current_user.id,
+            FileModel.is_destroyed.is_(False),
+            FileModel.size_bytes <= 100,
+        )
+    )
+    files = result.scalars().all()
+    deleted = 0
+    for f in files:
+        try:
+            destroyed = await DestructService.destroy_file(
+                db, f.id, reason="cleanup_system_files"
+            )
+            if destroyed:
+                deleted += 1
+        except Exception:
+            pass
+    return {"deleted": deleted}
+
+
 @router.delete("/{file_id}/destroy")
 async def manual_destroy(
     request: Request,
@@ -442,6 +681,14 @@ async def manual_destroy(
         db, file_id, reason="manual"
     )
     if destroyed:
+        await event_bus.publish(
+            str(current_user.id),
+            {
+                "type": "file_deleted",
+                "file_id": str(file_id),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         await AuditService.log_event(
             db,
             action=AuditAction.FILE_SELF_DESTRUCT,

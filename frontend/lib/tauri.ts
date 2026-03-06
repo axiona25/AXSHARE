@@ -10,22 +10,29 @@ declare global {
   }
 }
 
-export const isTauri = (): boolean =>
-  typeof window !== 'undefined' && !!window.__TAURI__
+export function isRunningInTauri(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof (window as Window & { __TAURI__?: unknown }).__TAURI__ !== 'undefined'
+  )
+}
+
+/** @deprecated Use isRunningInTauri() to avoid name shadowing. */
+export const isTauri = isRunningInTauri
 
 /** Alias for Tauri desktop environment (used by desktop-only UI). */
-export const isDesktop = isTauri
+export const isDesktop = isRunningInTauri
 
 // ─── Session lock / Vault ─────────────────────────────────────────────────────
 
 export async function lockSession(): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('lock_session')
 }
 
 export async function unlockSession(): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('unlock_session')
 }
@@ -41,7 +48,7 @@ export async function unlockVault(_passphrase: string): Promise<void> {
 }
 
 export async function isSessionLocked(): Promise<boolean> {
-  if (!isTauri()) return false
+  if (!isRunningInTauri()) return false
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<boolean>('is_session_locked')
 }
@@ -52,7 +59,7 @@ export async function saveTokenSecure(
   key: string,
   value: string
 ): Promise<void> {
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     if (typeof window !== 'undefined') localStorage.setItem(key, value)
     return
   }
@@ -61,7 +68,7 @@ export async function saveTokenSecure(
 }
 
 export async function getTokenSecure(key: string): Promise<string | null> {
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     if (typeof window === 'undefined') return null
     return localStorage.getItem(key)
   }
@@ -71,7 +78,7 @@ export async function getTokenSecure(key: string): Promise<string | null> {
 }
 
 export async function deleteTokenSecure(key: string): Promise<void> {
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     if (typeof window !== 'undefined') localStorage.removeItem(key)
     return
   }
@@ -84,7 +91,7 @@ export async function deleteTokenSecure(key: string): Promise<void> {
 export async function getVirtualDiskStatus(): Promise<{
   mounted: boolean
 }> {
-  if (!isTauri()) return { mounted: false }
+  if (!isRunningInTauri()) return { mounted: false }
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<{ mounted: boolean }>('get_virtual_disk_status')
 }
@@ -94,7 +101,7 @@ export async function getVirtualDiskStatus(): Promise<{
 export async function onSessionLock(
   callback: () => void
 ): Promise<() => void> {
-  if (!isTauri()) return () => {}
+  if (!isRunningInTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
   const unlisten = await listen('session-lock', () => callback())
   return unlisten
@@ -103,7 +110,7 @@ export async function onSessionLock(
 export async function onToggleVirtualDisk(
   callback: () => void
 ): Promise<() => void> {
-  if (!isTauri()) return () => {}
+  if (!isRunningInTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
   const unlisten = await listen('toggle-virtual-disk', () => callback())
   return unlisten
@@ -111,7 +118,7 @@ export async function onToggleVirtualDisk(
 
 /** Subscribe to deep-link URLs (e.g. axshare://invite/TOKEN). Calls handler with the path to open. */
 export async function onDeepLink(handler: (path: string) => void): Promise<() => void> {
-  if (!isTauri()) return () => {}
+  if (!isRunningInTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
   const unlisten = await listen<unknown>('deep-link://new-url', (event) => {
     const raw = event.payload
@@ -135,7 +142,7 @@ export async function onDeepLink(handler: (path: string) => void): Promise<() =>
 // ─── App version ─────────────────────────────────────────────────────────────
 
 export async function getAppVersion(): Promise<string> {
-  if (!isTauri()) return 'web'
+  if (!isRunningInTauri()) return 'web'
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<string>('get_app_version')
 }
@@ -143,19 +150,19 @@ export async function getAppVersion(): Promise<string> {
 // ─── Auto-lock ───────────────────────────────────────────────────────────────
 
 export async function setAutoLockTimeout(minutes: number): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('set_autolock_timeout', { minutes })
 }
 
 export async function setAutoLockEnabled(enabled: boolean): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('set_autolock_enabled', { enabled })
 }
 
 export async function registerUserActivity(): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('register_user_activity')
 }
@@ -166,7 +173,7 @@ export async function sendNativeNotification(
   title: string,
   body: string
 ): Promise<void> {
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
       new Notification(title, { body })
     }
@@ -180,7 +187,7 @@ export async function notifyFileShared(
   sender: string,
   filename: string
 ): Promise<void> {
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     return sendNativeNotification(
       'File condiviso',
       `${sender} ha condiviso "${filename}"`
@@ -194,7 +201,7 @@ export async function notifyPermissionExpiring(
   filename: string,
   minutes: number
 ): Promise<void> {
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     return sendNativeNotification(
       'Permesso in scadenza',
       `"${filename}" scade tra ${minutes} min`
@@ -205,7 +212,7 @@ export async function notifyPermissionExpiring(
 }
 
 export async function notifyFileDestroyed(filename: string): Promise<void> {
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     return sendNativeNotification(
       'File distrutto',
       `"${filename}" è stato auto-distrutto`
@@ -216,7 +223,7 @@ export async function notifyFileDestroyed(filename: string): Promise<void> {
 }
 
 export async function notifySyncComplete(count: number): Promise<void> {
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     return sendNativeNotification(
       'Sincronizzazione completata',
       `${count} file sincronizzati`
@@ -229,13 +236,13 @@ export async function notifySyncComplete(count: number): Promise<void> {
 // ─── File system / Drag & Drop ────────────────────────────────────────────────
 
 export async function pickFiles(multiple = true): Promise<string[]> {
-  if (!isTauri()) return []
+  if (!isRunningInTauri()) return []
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<string[]>('pick_files_dialog', { multiple })
 }
 
 export async function readFileForUpload(path: string): Promise<Uint8Array> {
-  if (!isTauri()) throw new Error('readFileForUpload disponibile solo in Tauri')
+  if (!isRunningInTauri()) throw new Error('readFileForUpload disponibile solo in Tauri')
   const { invoke } = await import('@tauri-apps/api/core')
   const bytes = await invoke<number[]>('read_file_for_upload', { path })
   return new Uint8Array(bytes)
@@ -247,7 +254,7 @@ export async function getFileMetadata(path: string): Promise<{
   size: number
   is_file: boolean
 }> {
-  if (!isTauri()) throw new Error('Solo in Tauri')
+  if (!isRunningInTauri()) throw new Error('Solo in Tauri')
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke('get_file_metadata', { path })
 }
@@ -255,7 +262,7 @@ export async function getFileMetadata(path: string): Promise<{
 export async function onFilesDropped(
   callback: (paths: string[]) => void
 ): Promise<() => void> {
-  if (!isTauri()) return () => {}
+  if (!isRunningInTauri()) return () => {}
   const { getCurrentWindow } = await import('@tauri-apps/api/window')
   const window = getCurrentWindow()
   return window.onDragDropEvent((event) => {
@@ -268,7 +275,7 @@ export async function onFilesDropped(
 // ─── Disco virtuale ──────────────────────────────────────────────────────────
 
 export async function mountVirtualDisk(mountPoint: string): Promise<void> {
-  if (!isTauri()) throw new Error('Solo in Tauri')
+  if (!isRunningInTauri()) throw new Error('Solo in Tauri')
   const { invoke } = await import('@tauri-apps/api/core')
   const { getAccessTokenSecure } = await import('@/lib/auth')
   const token = await getAccessTokenSecure()
@@ -281,12 +288,12 @@ export async function mountVirtualDisk(mountPoint: string): Promise<void> {
 
 /** Mount virtual disk using default mount point and current auth token (e.g. after onboarding). */
 export async function mountVirtualDiskWithPassphrase(_passphrase: string): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   await mountVirtualDisk(getDefaultMountPoint())
 }
 
 export async function unmountVirtualDisk(): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('unmount_virtual_disk')
 }
@@ -309,49 +316,49 @@ export interface SyncProgress {
 }
 
 export async function setSyncToken(token: string): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('set_sync_token', { jwt_token: token })
 }
 
 export async function startSync(): Promise<SyncProgress> {
-  if (!isTauri()) return { status: 'unavailable', total: 0, done: 0, last_sync: 0 }
+  if (!isRunningInTauri()) return { status: 'unavailable', total: 0, done: 0, last_sync: 0 }
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<SyncProgress>('start_sync')
 }
 
 export async function pauseSync(): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('pause_sync')
 }
 
 export async function resumeSync(): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('resume_sync')
 }
 
 export async function getSyncStatus(): Promise<SyncProgress> {
-  if (!isTauri()) return { status: 'unavailable', total: 0, done: 0, last_sync: 0 }
+  if (!isRunningInTauri()) return { status: 'unavailable', total: 0, done: 0, last_sync: 0 }
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<SyncProgress>('get_sync_status')
 }
 
 export async function enableOfflineFile(fileId: string): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('enable_offline_file', { file_id: fileId })
 }
 
 export async function disableOfflineFile(fileId: string): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('disable_offline_file', { file_id: fileId })
 }
 
 export async function getOfflineFiles(): Promise<unknown[]> {
-  if (!isTauri()) return []
+  if (!isRunningInTauri()) return []
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<unknown[]>('list_offline_files')
 }
@@ -360,13 +367,13 @@ export async function getCacheInfo(): Promise<{
   size_bytes: number
   size_mb: number
 }> {
-  if (!isTauri()) return { size_bytes: 0, size_mb: 0 }
+  if (!isRunningInTauri()) return { size_bytes: 0, size_mb: 0 }
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke('get_cache_info')
 }
 
 export async function clearLocalCache(): Promise<void> {
-  if (!isTauri()) return
+  if (!isRunningInTauri()) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('clear_cache')
 }

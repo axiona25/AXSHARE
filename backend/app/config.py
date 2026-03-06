@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     secret_key: str
     allowed_origins: list[str] = [
         "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
         "https://app.axshare.io",
     ]
 

@@ -29,6 +29,10 @@ class PublicKeyUpload(BaseModel):
     public_key_pem: str  # Chiave pubblica RSA in formato PEM
 
 
+class PrivateKeyUpload(BaseModel):
+    encrypted_private_key: str  # Chiave privata cifrata con KEK (base64)
+
+
 @router.get("/me")
 async def get_my_profile(current_user: User = Depends(get_current_user)):
     """Profilo dell'utente autenticato."""
@@ -82,6 +86,39 @@ async def upload_public_key(
         pass  # Vault non disponibile (es. test): chiave comunque salvata nel DB
 
     return {"status": "public_key_saved"}
+
+
+@router.put("/me/private-key")
+async def save_private_key(
+    payload: PrivateKeyUpload,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Salva la chiave privata cifrata (KEK) sul server. Usata per sync browser/desktop."""
+    current_user.private_key_encrypted = payload.encrypted_private_key
+    await db.commit()
+    return {"status": "private_key_saved"}
+
+
+@router.delete("/me/keys")
+async def reset_user_keys(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Elimina le chiavi RSA dal profilo (per rigenerare con RSA-4096)."""
+    current_user.public_key_rsa = None
+    current_user.private_key_encrypted = None
+    await db.commit()
+    return {"message": "Chiavi resettate"}
+
+
+@router.get("/me/private-key")
+async def get_my_private_key(current_user: User = Depends(get_current_user)):
+    """Restituisce la chiave privata cifrata e la chiave pubblica (per popolare IndexedDB su altro client)."""
+    return {
+        "encrypted_private_key": current_user.private_key_encrypted,
+        "public_key_pem": current_user.public_key_rsa,
+    }
 
 
 @router.post("/me/signing-key", response_model=dict)

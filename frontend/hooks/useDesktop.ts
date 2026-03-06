@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import {
   getFileMetadata,
-  isTauri,
+  isRunningInTauri,
   onFilesDropped,
   onSessionLock,
   pickFiles,
@@ -34,7 +34,7 @@ export function useDesktop(options: UseDesktopOptions = {}) {
 
   // Setup auto-lock
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isRunningInTauri()) return
     if (options.autoLockMinutes !== undefined) {
       setAutoLockTimeout(options.autoLockMinutes)
       setAutoLockEnabled(options.autoLockMinutes > 0)
@@ -43,7 +43,7 @@ export function useDesktop(options: UseDesktopOptions = {}) {
 
   // Listener session lock dal tray
   useEffect(() => {
-    if (!isTauri() || !options.onSessionLock) return
+    if (!isRunningInTauri() || !options.onSessionLock) return
     let cleanup: (() => void) | undefined
     onSessionLock(() => options.onSessionLock!()).then((fn) => {
       cleanup = fn
@@ -55,7 +55,7 @@ export function useDesktop(options: UseDesktopOptions = {}) {
 
   // Drag & drop dal filesystem
   useEffect(() => {
-    if (!isTauri() || !options.onFilesDropped) return
+    if (!isRunningInTauri() || !options.onFilesDropped) return
     let cleanup: (() => void) | undefined
     onFilesDropped(async (paths) => {
       const files = await Promise.all(
@@ -78,7 +78,7 @@ export function useDesktop(options: UseDesktopOptions = {}) {
 
   // Registra attività utente (throttled) per reset auto-lock
   const handleActivity = useCallback(() => {
-    if (!isTauri()) return
+    if (!isRunningInTauri()) return
     if (activityThrottle.current) return
     activityThrottle.current = setTimeout(() => {
       registerUserActivity()
@@ -88,7 +88,7 @@ export function useDesktop(options: UseDesktopOptions = {}) {
 
   // Picker file nativo
   const openFilePicker = useCallback(async (multiple = true) => {
-    if (!isTauri()) return []
+    if (!isRunningInTauri()) return []
     const paths = await pickFiles(multiple)
     return Promise.all(
       paths.map(async (path) => {
@@ -100,7 +100,7 @@ export function useDesktop(options: UseDesktopOptions = {}) {
   }, [])
 
   return {
-    isTauri: isTauri(),
+    isTauri: isRunningInTauri(),
     handleActivity,
     openFilePicker,
     notifyFileShared,

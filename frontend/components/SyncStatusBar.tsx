@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import {
-  isTauri,
+  isRunningInTauri,
   getSyncStatus,
   pauseSync,
   resumeSync,
@@ -13,7 +13,7 @@ export function SyncStatusBar() {
   const [sync, setSync] = useState<SyncProgress | null>(null)
 
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isRunningInTauri()) return
 
     async function refresh() {
       const s = await getSyncStatus()
@@ -25,7 +25,7 @@ export function SyncStatusBar() {
     return () => clearInterval(interval)
   }, [])
 
-  if (!isTauri() || !sync) return null
+  if (!isRunningInTauri() || !sync) return null
 
   const pending = Math.max(0, (sync.total ?? 0) - (sync.done ?? 0))
   const statusLabel: Record<string, string> = {

@@ -38,7 +38,7 @@ impl AutoLock {
         let timeout_minutes = self.timeout_minutes.clone();
         let enabled = self.enabled.clone();
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let mut ticker = interval(Duration::from_secs(30)); // check ogni 30s
             loop {
                 ticker.tick().await;

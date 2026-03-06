@@ -4,6 +4,7 @@ import type { NextRequest } from 'next/server'
 const PUBLIC_ROUTES = [
   '/login',
   '/register',
+  '/setup-keys',
   '/share',
   '/invite',
   '/guest',
@@ -11,22 +12,25 @@ const PUBLIC_ROUTES = [
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
-  const token =
-    request.cookies.get('access_token')?.value ||
-    request.headers.get('authorization')?.replace('Bearer ', '')
 
-  if (PUBLIC_ROUTES.some((r) => pathname.startsWith(r))) {
+  // Lascia passare le route pubbliche
+  if (PUBLIC_ROUTES.some((route) => pathname.startsWith(route))) {
     return NextResponse.next()
   }
 
-  if (pathname.startsWith('/api')) {
+  // Lascia passare le route API e file statici
+  if (
+    pathname.startsWith('/api') ||
+    pathname.startsWith('/_next') ||
+    pathname.startsWith('/favicon')
+  ) {
     return NextResponse.next()
   }
 
-  if (!token && pathname !== '/login') {
-    return NextResponse.redirect(new URL('/login', request.url))
-  }
-
+  // Per tutte le altre route: non fare redirect dal middleware.
+  // Il token dev è in localStorage; il middleware (Edge) non può leggerlo.
+  // Il layout client-side (app)/layout.tsx gestisce l'auth e fa
+  // router.replace('/login') se !isLoading && !user.
   return NextResponse.next()
 }
 

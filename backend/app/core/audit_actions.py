@@ -25,6 +25,7 @@ class AuditAction:
     FILE_DELETE = "file.delete"
     FILE_RESTORE = "file.restore"
     FILE_VERSION_UPLOAD = "file.version_upload"
+    FILE_VERSION_DELETE = "file.version_delete"
     FILE_SELF_DESTRUCT = "file.self_destruct"
     FILE_MOVE = "file.move"
 

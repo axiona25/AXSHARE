@@ -156,23 +156,30 @@ class File(Base, UUIDMixin, TimestampMixin):
 
 
 class FileVersion(Base, UUIDMixin, TimestampMixin):
-    """Snapshot di una versione precedente di un file (per rollback)."""
+    """Snapshot di una versione di un file (versioning illimitato)."""
 
     __tablename__ = "file_versions"
     __table_args__ = {"schema": "axshare"}
 
     file_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("axshare.files.id"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("axshare.files.id", ondelete="CASCADE"),
+        nullable=False,
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
     file_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     encryption_iv: Mapped[str] = mapped_column(String(64), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    content_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("axshare.users.id"), nullable=False
     )
 
     file: Mapped["File"] = relationship(
         "File", back_populates="version_history", foreign_keys=[file_id]
+    )
+    creator: Mapped["User"] = relationship(
+        "User", foreign_keys=[created_by]
     )

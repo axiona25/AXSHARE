@@ -237,14 +237,14 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3030}
       GF_SMTP_ENABLED: "false"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3001:3000"
+      - "3030:3000"
     depends_on:
       - prometheus
     restart: unless-stopped

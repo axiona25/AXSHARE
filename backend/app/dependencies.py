@@ -1,7 +1,9 @@
 """Dipendenze FastAPI globali — get_db, get_current_user, require_admin."""
 
 import uuid
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
@@ -14,11 +16,8 @@ from app.models.user import User, UserRole
 security = HTTPBearer()
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    token = credentials.credentials
+async def _get_user_from_token(token: str, db: AsyncSession) -> User:
+    """Decodifica JWT e restituisce l'utente. Solleva HTTPException se invalido."""
     settings = get_settings()
     try:
         with open(settings.jwt_public_key_path, "r") as f:
@@ -37,7 +36,6 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token non valido",
         )
-
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
@@ -46,6 +44,30 @@ async def get_current_user(
             detail="Utente non trovato",
         )
     return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    return await _get_user_from_token(credentials.credentials, db)
+
+
+async def get_current_user_sse(
+    token: Optional[str] = Query(None, alias="token"),
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Come get_current_user ma accetta token da query param (per EventSource SSE)."""
+    actual_token: Optional[str] = token
+    if not actual_token and authorization and authorization.startswith("Bearer "):
+        actual_token = authorization[7:].strip()
+    if not actual_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token mancante",
+        )
+    return await _get_user_from_token(actual_token, db)
 
 
 async def require_admin(

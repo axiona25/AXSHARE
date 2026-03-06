@@ -111,9 +111,41 @@ export function pemToSpki(pem: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+/** Deriva chiave AES-256 da email + PIN con PBKDF2 (zero-knowledge: PIN non va al server). */
+export async function deriveKeyFromPin(
+  email: string,
+  pin: string,
+  salt: Uint8Array
+): Promise<CryptoKey> {
+  const encoder = new TextEncoder()
+  const keyMaterial = await window.crypto.subtle.importKey(
+    'raw',
+    encoder.encode(email.toLowerCase().trim() + ':' + pin),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  )
+  return await window.crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: 600000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  )
+}
+
+export function generatePinSalt(): Uint8Array {
+  return window.crypto.getRandomValues(new Uint8Array(32))
+}
+
 /**
- * Genera keypair RSA-OAEP 2048 bit con Web Crypto.
- * Restituisce chiavi esportabili in formato JWK e PEM.
+ * Genera keypair RSA-OAEP 4096 bit con Web Crypto.
+ * 4096 bit evita bug RSA-OAEP 2048 nella WebView Tauri su macOS 26.x.
  */
 export async function generateRSAKeyPair(): Promise<{
   publicKey: CryptoKey
@@ -124,7 +156,7 @@ export async function generateRSAKeyPair(): Promise<{
   const keyPair = await crypto.subtle.generateKey(
     {
       name: 'RSA-OAEP',
-      modulusLength: 2048,
+      modulusLength: 4096,
       publicExponent: new Uint8Array([1, 0, 1]),
       hash: 'SHA-256',
     },
@@ -179,12 +211,24 @@ export async function decryptFileKeyWithRSA(
   privateKey: CryptoKey
 ): Promise<Uint8Array> {
   const ciphertext = base64ToBytes(encryptedKeyB64);
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'RSA-OAEP' },
-    privateKey,
-    ciphertext as BufferSource
-  );
-  return new Uint8Array(decrypted);
+  console.log('[RSA DECRYPT] privateKey type:', privateKey.type);
+  console.log('[RSA DECRYPT] privateKey algorithm:', JSON.stringify(privateKey.algorithm));
+  console.log('[RSA DECRYPT] privateKey usages:', privateKey.usages);
+  console.log('[RSA DECRYPT] encryptedKey length:', ciphertext.length);
+
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'RSA-OAEP' },
+      privateKey,
+      ciphertext as BufferSource
+    );
+    console.log('[RSA DECRYPT] OK, bytes:', decrypted.byteLength);
+    return new Uint8Array(decrypted);
+  } catch (err) {
+    console.error('[RSA DECRYPT] ERRORE:', err);
+    console.error('[RSA DECRYPT] privateKey extractable:', privateKey.extractable);
+    throw err;
+  }
 }
 
 // ─── Key Encryption Key (KEK) ─────────────────────────────────────────────────

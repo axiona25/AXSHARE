@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Default capability for main window: core, event, devtools, file watcher",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:event:default"
+  ]
+}

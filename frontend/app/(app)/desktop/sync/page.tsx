@@ -2,147 +2,194 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import {
-  isTauri,
-  getSyncStatus,
-  pauseSync,
-  resumeSync,
-} from '@/lib/tauri'
-import { useSync } from '@/hooks/useSync'
+import { isRunningInTauri } from '@/lib/tauri'
+import { useSyncDesktop } from '@/hooks/useSyncDesktop'
+
+const INTERVAL_OPTIONS = [5, 15, 30, 60] as const
 
 export default function DesktopSyncPage() {
-  const [syncStatus, setSyncStatus] = useState<{
-    status: string
-    total: number
-    done: number
-    last_sync: number
-  } | null>(null)
-  const { status, progress } = useSync()
+  const {
+    syncState,
+    lastSync,
+    syncedFiles,
+    progress,
+    syncNow,
+    startAutoSync,
+    stopAutoSync,
+    autoSyncEnabled,
+    autoSyncIntervalMinutes,
+    setAutoSyncIntervalMinutes,
+  } = useSyncDesktop()
+
+  const [intervalSelect, setIntervalSelect] = useState<number>(15)
 
   useEffect(() => {
-    if (!isTauri()) return
-    getSyncStatus().then((s) => {
-      if (s && s.status !== 'unavailable')
-        setSyncStatus({
-          status: s.status,
-          total: s.total,
-          done: s.done,
-          last_sync: s.last_sync,
-        })
-    })
-    const iv = setInterval(() => {
-      getSyncStatus().then((s) => {
-        if (s && s.status !== 'unavailable')
-          setSyncStatus({
-            status: s.status,
-            total: s.total,
-            done: s.done,
-            last_sync: s.last_sync,
-          })
-      })
-    }, 3000)
-    return () => clearInterval(iv)
+    if (typeof window === 'undefined') return
+    const s = localStorage.getItem('axshare_sync_interval')
+    if (s) {
+      const n = parseInt(s, 10)
+      if (INTERVAL_OPTIONS.includes(n)) setIntervalSelect(n)
+    }
   }, [])
 
-  const pendingOperations: Array<{ id: string; type: string; file_name: string; status: string }> = []
-  const conflicts: Array<{ id: string; file_name: string }> = []
-
-  if (!isTauri()) {
+  if (!isRunningInTauri()) {
     return (
       <main data-testid="sync-panel">
         <p data-testid="desktop-only">
           Questa pagina è disponibile solo nel client desktop.
         </p>
         <p>
-          <Link href="/dashboard" data-testid="back-dashboard">Torna alla Dashboard</Link>
+          <Link href="/dashboard" data-testid="back-dashboard">
+            Torna alla Dashboard
+          </Link>
         </p>
       </main>
     )
   }
 
-  const displayStatus = syncStatus ?? {
-    status,
-    total: progress.total,
-    done: progress.done,
-    last_sync: progress.last_sync,
+  const statusLabel =
+    syncState === 'syncing'
+      ? 'In corso...'
+      : syncState === 'success' && lastSync
+        ? `Sincronizzato il ${lastSync.toLocaleString('it')}`
+        : syncState === 'error'
+          ? 'Errore durante la sincronizzazione'
+          : 'Mai sincronizzato'
+
+  const handleIntervalChange = (minutes: number) => {
+    setIntervalSelect(minutes)
+    if (autoSyncEnabled) {
+      startAutoSync(minutes)
+    }
+  }
+
+  const toggleAutoSync = (on: boolean) => {
+    if (on) {
+      startAutoSync(intervalSelect)
+    } else {
+      stopAutoSync()
+    }
   }
 
   return (
-    <main data-testid="sync-panel">
-      <h1>Sincronizzazione</h1>
+    <main data-testid="sync-panel" style={{ padding: '1.5rem', maxWidth: 720 }}>
+      <h1>Sincronizzazione desktop</h1>
+      <p>
+        <Link href="/dashboard">← Dashboard</Link>
+      </p>
 
-      <section data-testid="sync-status-section">
+      <section style={{ marginTop: '1.5rem' }}>
         <h2>Stato</h2>
-        <dl>
-          <dt>Stato</dt>
-          <dd data-testid="sync-state">{displayStatus.status}</dd>
-          <dt>In coda</dt>
-          <dd data-testid="sync-queue">
-            {Math.max(0, displayStatus.total - displayStatus.done)}
-          </dd>
-          <dt>Ultimo sync</dt>
-          <dd>
-            {displayStatus.last_sync > 0
-              ? new Date(displayStatus.last_sync * 1000).toLocaleString('it')
-              : 'Mai'}
-          </dd>
-        </dl>
+        <p data-testid="sync-state">{statusLabel}</p>
+        {syncState === 'syncing' && (
+          <div
+            style={{
+              marginTop: 8,
+              height: 8,
+              background: '#2a4a6a',
+              borderRadius: 4,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                height: '100%',
+                width: `${progress}%`,
+                background: '#1974CA',
+                transition: 'width 0.2s',
+              }}
+            />
+          </div>
+        )}
         <button
           type="button"
-          data-testid="pause-sync"
-          onClick={async () => {
-            await pauseSync()
-            setSyncStatus((prev) => (prev ? { ...prev, status: 'paused' } : null))
+          data-testid="sync-now"
+          onClick={() => syncNow()}
+          disabled={syncState === 'syncing'}
+          style={{
+            marginTop: 12,
+            padding: '0.5rem 1rem',
+            cursor: syncState === 'syncing' ? 'not-allowed' : 'pointer',
           }}
-          disabled={displayStatus.status !== 'syncing'}
         >
-          Pausa sync
-        </button>
-        <button
-          type="button"
-          data-testid="resume-sync"
-          onClick={async () => {
-            await resumeSync()
-            const s = await getSyncStatus()
-            if (s && s.status !== 'unavailable')
-              setSyncStatus({ status: s.status, total: s.total, done: s.done, last_sync: s.last_sync })
-          }}
-          disabled={displayStatus.status !== 'paused'}
-        >
-          Riprendi sync
+          {syncState === 'syncing' ? 'Sincronizzazione...' : 'Sincronizza ora'}
         </button>
       </section>
 
-      <hr />
-
-      <section data-testid="pending-ops-section">
-        <h2>Operazioni in coda</h2>
-        {pendingOperations.length === 0 && (
-          <p data-testid="no-pending">Nessuna operazione in coda.</p>
+      <section style={{ marginTop: '2rem' }}>
+        <h2>File sincronizzati ({syncedFiles.length})</h2>
+        {syncedFiles.length === 0 ? (
+          <p data-testid="no-synced-files">
+            Nessun file in root. Esegui &quot;Sincronizza ora&quot; per aggiornare
+            la lista.
+          </p>
+        ) : (
+          <ul
+            data-testid="synced-files-list"
+            style={{ listStyle: 'none', padding: 0, margin: 0 }}
+          >
+            {syncedFiles.map((f) => (
+              <li
+                key={f.id}
+                style={{
+                  padding: '0.5rem 0',
+                  borderBottom: '1px solid #2a4a6a',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                }}
+              >
+                <span title={f.synced ? 'Nome decifrato' : 'Nome cifrato'}>
+                  {f.name}
+                  {!f.synced && ' (cifrato)'}
+                </span>
+                <span style={{ color: '#8ab4d0', fontSize: '0.9rem' }}>
+                  {(f.size / 1024).toFixed(1)} KB
+                  {f.updatedAt &&
+                    ` · ${new Date(f.updatedAt).toLocaleDateString('it')}`}
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
-        <ul>
-          {pendingOperations.map((op) => (
-            <li key={op.id} data-testid="pending-op-item">
-              {op.type} — {op.file_name} — {op.status}
-            </li>
-          ))}
-        </ul>
       </section>
 
-      <hr />
-
-      <section data-testid="conflicts-section">
-        <h2>Conflitti</h2>
-        {conflicts.length === 0 && (
-          <p data-testid="no-conflicts">Nessun conflitto.</p>
+      <section style={{ marginTop: '2rem' }}>
+        <h2>Auto-sync</h2>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={autoSyncEnabled}
+            onChange={(e) => toggleAutoSync(e.target.checked)}
+            data-testid="auto-sync-toggle"
+          />
+          Abilita auto-sync
+        </label>
+        <div style={{ marginTop: 12 }}>
+          <label>
+            Intervallo (minuti):{' '}
+            <select
+              value={intervalSelect}
+              onChange={(e) =>
+                handleIntervalChange(Number(e.target.value) as 5 | 15 | 30 | 60)
+              }
+              data-testid="sync-interval"
+              disabled={!autoSyncEnabled}
+            >
+              {INTERVAL_OPTIONS.map((m) => (
+                <option key={m} value={m}>
+                  {m} min
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {autoSyncEnabled && autoSyncIntervalMinutes != null && (
+          <p style={{ marginTop: 8, color: '#8ab4d0', fontSize: '0.9rem' }}>
+            Prossima sincronizzazione automatica tra {autoSyncIntervalMinutes}{' '}
+            minuti.
+          </p>
         )}
-        <ul>
-          {conflicts.map((c) => (
-            <li key={c.id} data-testid="conflict-item">
-              <span>{c.file_name}</span>
-            </li>
-          ))}
-        </ul>
       </section>
     </main>
   )

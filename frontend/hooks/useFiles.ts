@@ -10,16 +10,26 @@
 'use client'
 
 import useSWR, { mutate } from 'swr'
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { filesApi, foldersApi } from '@/lib/api'
 import type { FileItem, Folder, FileVersion } from '@/types'
 
 // ─── useFiles ────────────────────────────────────────────────────────────────
 
 export function useFiles(folderId?: string | null) {
-  const key = folderId ? `/folders/${folderId}/files` : null
+  const key =
+    folderId != null && folderId !== ''
+      ? `/folders/${folderId}/files`
+      : '/folders/root/files'
   const { data, error, isLoading, mutate: revalidate } =
     useSWR<FileItem[]>(key)
+
+  useEffect(() => {
+    if (key) console.log('[FILES] Fetch lista file...', { key })
+  }, [key])
+  useEffect(() => {
+    if (data) console.log('[FILES] File ricevuti:', data.length)
+  }, [data])
 
   return {
     files: data ?? [],
@@ -87,7 +97,11 @@ export function useFileMutations() {
   const deleteFile = useCallback(
     async (fileId: string, folderId?: string) => {
       await filesApi.destroy(fileId)
-      if (folderId) await mutate(`/folders/${folderId}/files`)
+      if (folderId) {
+        await mutate(`/folders/${folderId}/files`)
+      } else {
+        await mutate('/folders/root/files')
+      }
     },
     []
   )
@@ -96,6 +110,14 @@ export function useFileMutations() {
     async (fileId: string, versionNumber: number) => {
       await filesApi.restoreVersion(fileId, versionNumber)
       await mutate(`/files/${fileId}`)
+      await mutate(`/files/${fileId}/versions`)
+    },
+    []
+  )
+
+  const deleteVersion = useCallback(
+    async (fileId: string, versionNumber: number) => {
+      await filesApi.deleteVersion(fileId, versionNumber)
       await mutate(`/files/${fileId}/versions`)
     },
     []
@@ -117,6 +139,7 @@ export function useFileMutations() {
     createFolder,
     deleteFile,
     restoreVersion,
+    deleteVersion,
     setSelfDestruct,
   }
 }

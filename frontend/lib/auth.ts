@@ -1,15 +1,9 @@
 /**
  * Utilità per gestione JWT e sessione lato client.
- * In Tauri usa Keychain OS; nel browser usa localStorage.
+ * Token in localStorage (browser e WebView Tauri).
  */
 
 import { decodeJwt } from 'jose'
-import {
-  isTauri,
-  saveTokenSecure,
-  getTokenSecure,
-  deleteTokenSecure,
-} from '@/lib/tauri'
 import type { JWTPayload, UserRole } from '@/types'
 
 const ACCESS_TOKEN_KEY = 'axshare_access_token'
@@ -37,33 +31,37 @@ export function clearTokens(): void {
   localStorage.removeItem(REFRESH_TOKEN_KEY)
 }
 
-/** Salva token in Keychain (Tauri) o localStorage (browser). */
+/** Salva token. In Tauri dev usa localStorage (Keychain può non essere pronto). */
 export async function saveTokensSecure(
   accessToken: string,
   refreshToken?: string
 ): Promise<void> {
-  await saveTokenSecure(ACCESS_TOKEN_KEY, accessToken)
-  if (refreshToken) await saveTokenSecure(REFRESH_TOKEN_KEY, refreshToken)
+  if (typeof window === 'undefined') return
+  // In Tauri usiamo localStorage così AuthContext e api trovano il token
+  // (la WebView ha un contesto separato; il keychain Rust può non essere sincronizzato)
+  localStorage.setItem(ACCESS_TOKEN_KEY, accessToken)
+  if (refreshToken) {
+    localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
+  }
 }
 
-/** Recupera access token da Keychain (Tauri) o localStorage (browser). */
+/** Recupera access token. In Tauri legge da localStorage (stesso store di saveTokensSecure). */
 export async function getAccessTokenSecure(): Promise<string | null> {
   if (typeof window === 'undefined') return null
-  if (isTauri()) return getTokenSecure(ACCESS_TOKEN_KEY)
   return localStorage.getItem(ACCESS_TOKEN_KEY)
 }
 
-/** Recupera refresh token da Keychain (Tauri) o localStorage (browser). */
+/** Recupera refresh token. */
 export async function getRefreshTokenSecure(): Promise<string | null> {
   if (typeof window === 'undefined') return null
-  if (isTauri()) return getTokenSecure(REFRESH_TOKEN_KEY)
   return localStorage.getItem(REFRESH_TOKEN_KEY)
 }
 
-/** Rimuove token da Keychain (Tauri) o localStorage (browser). */
+/** Rimuove token da localStorage. */
 export async function clearTokensSecure(): Promise<void> {
-  await deleteTokenSecure(ACCESS_TOKEN_KEY)
-  await deleteTokenSecure(REFRESH_TOKEN_KEY)
+  if (typeof window === 'undefined') return
+  localStorage.removeItem(ACCESS_TOKEN_KEY)
+  localStorage.removeItem(REFRESH_TOKEN_KEY)
 }
 
 export function decodeToken(token: string): JWTPayload | null {
@@ -75,10 +73,37 @@ export function decodeToken(token: string): JWTPayload | null {
   }
 }
 
+/** Decode JWT payload (base64 o base64url). */
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const pad = b64.length % 4
+    if (pad) b64 += '='.repeat(4 - pad)
+    return JSON.parse(atob(b64)) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
 export function isTokenExpired(token: string): boolean {
-  const payload = decodeToken(token)
-  if (!payload) return true
-  return payload.exp < Date.now() / 1000 - 60
+  try {
+    const payload = decodeJwtPayload(token)
+    if (!payload) {
+      console.error('[TOKEN] Errore decode JWT')
+      return true
+    }
+    const exp = payload.exp as number | undefined
+    const now = Math.floor(Date.now() / 1000)
+    console.log('[TOKEN] payload.exp:', exp, 'now:', now)
+    if (exp == null) return false // nessuna scadenza = valido
+    // 10 secondi di tolleranza per clock skew
+    return exp < now - 10
+  } catch {
+    console.error('[TOKEN] Errore decode JWT')
+    return true
+  }
 }
 
 export function getUserIdFromToken(token: string): string | null {

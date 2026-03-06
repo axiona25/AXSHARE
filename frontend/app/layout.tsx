@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { IntlProvider } from '@/components/IntlProvider'
 import { AuthProvider } from '@/context/AuthContext'
+import { SyncProvider } from '@/context/SyncContext'
 import { SWRProvider } from '@/components/SWRProvider'
 import { DeepLinkListener } from '@/components/DeepLinkListener'
 import './globals.css'
@@ -20,10 +21,12 @@ export default function RootLayout({
       <body>
         <IntlProvider>
           <AuthProvider>
-            <SWRProvider>
-              <DeepLinkListener />
-              {children}
-            </SWRProvider>
+            <SyncProvider>
+              <SWRProvider>
+                <DeepLinkListener />
+                {children}
+              </SWRProvider>
+            </SyncProvider>
           </AuthProvider>
         </IntlProvider>
       </body>

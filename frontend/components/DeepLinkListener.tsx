@@ -2,13 +2,13 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { isTauri, onDeepLink } from '@/lib/tauri'
+import { isRunningInTauri, onDeepLink } from '@/lib/tauri'
 
 export function DeepLinkListener() {
   const router = useRouter()
 
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isRunningInTauri()) return
     let unlisten: (() => void) | undefined
     onDeepLink((path) => {
       router.push(path)

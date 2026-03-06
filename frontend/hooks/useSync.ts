@@ -6,7 +6,7 @@ import {
   getCacheInfo,
   getOfflineFiles,
   getSyncStatus,
-  isTauri,
+  isRunningInTauri,
   startSync,
   pauseSync,
   resumeSync,
@@ -22,7 +22,7 @@ export function useSync() {
   const [cacheInfo, setCacheInfo] = useState({ size_bytes: 0, size_mb: 0 })
 
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isRunningInTauri()) return
     const interval = setInterval(async () => {
       const s = await getSyncStatus()
       setStatus(s.status)
@@ -56,7 +56,7 @@ export function useSync() {
   }, [])
 
   useEffect(() => {
-    if (!isTauri()) return
+    if (!isRunningInTauri()) return
     Promise.all([getOfflineFiles(), getCacheInfo()]).then(([files, info]) => {
       setOfflineFiles(files)
       setCacheInfo(info)

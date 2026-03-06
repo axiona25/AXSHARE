@@ -1,7 +1,6 @@
-use tauri::State;
+use tauri::{Manager, State};
 
-use crate::api_client::ApiClient;
-use crate::virtual_disk::VirtualDiskConfig;
+use crate::virtual_disk::DiskFileEntry;
 use crate::AppState;
 
 #[tauri::command]
@@ -42,34 +41,80 @@ pub async fn open_url_external(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn mount_virtual_disk(
-    mount_point: String,
-    jwt_token: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    if *state.virtual_disk_mounted.lock().unwrap() {
-        return Err("Disco già montato".to_string());
-    }
-
-    let api = ApiClient::new("http://localhost:8000/api/v1");
-    api.set_token(jwt_token).await;
-
-    let config = VirtualDiskConfig {
-        api_client: api,
-        mount_point: mount_point.clone(),
-        user_private_key: vec![], // TODO: ricevere da keychain in TASK 7.4
-    };
-
-    state.virtual_disk.mount(config).await?;
-    *state.virtual_disk_mounted.lock().unwrap() = true;
-    log::info!("Virtual disk mounted at {}", mount_point);
+pub async fn open_devtools(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Window 'main' not found".to_string())?;
+    window.open_devtools();
     Ok(())
 }
 
 #[tauri::command]
+pub async fn mount_virtual_disk(
+    _mount_point: String,
+    jwt_token: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    if *state.virtual_disk_mounted.lock().unwrap() {
+        return Err("Disco già montato".to_string());
+    }
+    log::info!("[VIRTUAL DISK] Mounting...");
+    let result = state.virtual_disk.mount(jwt_token).await?;
+    *state.virtual_disk_mounted.lock().unwrap() = true;
+    crate::file_protector::decrypt_all_local_files(state.local_db.as_ref()).await;
+    log::info!("[VIRTUAL DISK] Mounted at {}", result);
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn unmount_virtual_disk(state: State<'_, AppState>) -> Result<(), String> {
+    log::info!("[VIRTUAL DISK] Unmounting...");
+    crate::file_protector::encrypt_all_local_files(state.local_db.as_ref()).await;
     state.virtual_disk.unmount().await?;
     *state.virtual_disk_mounted.lock().unwrap() = false;
+    log::info!("[VIRTUAL DISK] Unmounted");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn is_disk_mounted(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.virtual_disk.is_mounted().await)
+}
+
+#[tauri::command]
+pub async fn cleanup_disk_files(state: State<'_, AppState>) -> Result<u32, String> {
+    state.local_db.remove_system_files()
+}
+
+#[tauri::command]
+pub async fn update_disk_file_list(
+    files: Vec<DiskFileEntry>,
+    jwt_token: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    println!("[DISK] update_disk_file_list: {} file ricevuti", files.len());
+
+    if let Some(t) = jwt_token {
+        println!("[DISK] JWT token impostato (len={})", t.len());
+        state.virtual_disk.set_jwt_token(t).await;
+    } else {
+        println!("[DISK] ATTENZIONE: jwt_token non passato");
+    }
+
+    for f in &files {
+        println!(
+            "[DISK]  - {} ({}) file_key_base64={}",
+            f.name,
+            f.file_id,
+            if f.file_key_base64.is_some() {
+                "presente"
+            } else {
+                "MANCANTE"
+            }
+        );
+    }
+
+    state.virtual_disk.update_files(files).await?;
     Ok(())
 }
 
@@ -145,4 +190,129 @@ pub async fn get_cache_info(
 #[tauri::command]
 pub async fn clear_cache(state: State<'_, AppState>) -> Result<(), String> {
     state.sync_engine.clear_cache().await
+}
+
+// ─── Apri file con app nativa (Mac Preview, Word, ecc.) ─────────────────────
+
+#[tauri::command]
+pub async fn create_temp_dir() -> Result<String, String> {
+    let temp = std::env::temp_dir().join("axshare_temp");
+    std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
+    Ok(temp.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn mark_file_as_axshare(
+    local_path: String,
+    file_id: String,
+    file_key_base64: String,
+    original_name: String,
+    content_hash: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let path = std::path::Path::new(&local_path);
+    crate::xattr_manager::set_axshare_xattr(
+        path,
+        &file_id,
+        &file_key_base64,
+        &original_name,
+    )?;
+    state.local_db.upsert(&crate::local_db::LocalFileEntry {
+        local_path,
+        file_id,
+        file_key_base64,
+        original_name,
+        content_hash,
+        status: "plain".to_string(),
+    })?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_file_native(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", &path])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("xdg-open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Crea dir temp, scrive il file e restituisce il path completo. Evita di esporre fs alla WebView.
+#[tauri::command]
+pub async fn write_temp_file(name: String, contents: Vec<u8>) -> Result<String, String> {
+    let temp = std::env::temp_dir().join("axshare_temp");
+    std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
+    let name_safe = std::path::Path::new(&name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(name.as_str());
+    let file_path = temp.join(name_safe);
+    std::fs::write(&file_path, &contents).map_err(|e| e.to_string())?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn set_tray_status(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    status: String,
+) -> Result<(), String> {
+    let tooltip = match status.as_str() {
+        "connected" => "AXSHARE — Connesso",
+        "syncing" => "AXSHARE — Sincronizzazione...",
+        "error" => "AXSHARE — Errore connessione",
+        "locked" => "AXSHARE — Sessione bloccata",
+        _ => "AXSHARE",
+    };
+    let guard = state.tray_id.lock().unwrap();
+    if let Some(ref id) = *guard {
+        if let Some(tray) = app.tray_by_id(id) {
+            tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_temp_file(path: String) -> Result<(), String> {
+    std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn read_temp_file(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn watch_temp_file(
+    file_id: String,
+    temp_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.file_watcher.watch_file(file_id, temp_path);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn unwatch_temp_file(
+    temp_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.file_watcher.unwatch_file(&temp_path);
+    Ok(())
 }

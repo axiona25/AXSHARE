@@ -58,6 +58,33 @@ async def list_root_folders(
     return [{"id": str(f.id), "name_encrypted": f.name_encrypted} for f in folders]
 
 
+@router.get("/root/files")
+async def list_root_files(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """File in root (folder_id IS NULL) per l'utente corrente. Esclude file junk (size <= 100)."""
+    result = await db.execute(
+        select(File).where(
+            File.owner_id == current_user.id,
+            File.folder_id.is_(None),
+            File.is_destroyed.is_(False),
+            File.size_bytes > 100,
+        )
+    )
+    files = result.scalars().all()
+    return [
+        {
+            "id": str(f.id),
+            "name_encrypted": f.name_encrypted,
+            "size": f.size_bytes,
+            "current_version": f.version,
+            "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+        }
+        for f in files
+    ]
+
+
 @router.get("/{folder_id}/children")
 async def list_children(
     folder_id: uuid.UUID,
@@ -91,10 +118,16 @@ async def list_folder_files(
         select(File).where(
             File.folder_id == folder_id,
             File.is_destroyed.is_(False),
+            File.size_bytes > 100,
         )
     )
     files = result.scalars().all()
     return [
-        {"id": str(f.id), "name_encrypted": f.name_encrypted, "size": f.size_bytes}
+        {
+            "id": str(f.id),
+            "name_encrypted": f.name_encrypted,
+            "size": f.size_bytes,
+            "current_version": f.version,
+        }
         for f in files
     ]

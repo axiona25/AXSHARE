@@ -11,7 +11,7 @@ import axios, {
   AxiosError,
   InternalAxiosRequestConfig,
 } from 'axios'
-import { isTauri } from '@/lib/tauri'
+import { isRunningInTauri } from '@/lib/tauri'
 import {
   getAccessTokenSecure,
   getRefreshTokenSecure,
@@ -25,6 +25,7 @@ import type {
   FileVersion,
   Folder,
   Group,
+  RootFileItem,
   Permission,
   PermissionLevel,
   UploadMetadata,
@@ -43,13 +44,20 @@ export const apiClient: AxiosInstance = axios.create({
 
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
+    // FormData: non impostare Content-Type così il browser aggiunge boundary
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      config.headers = config.headers ?? {}
+      delete (config.headers as Record<string, unknown>)['Content-Type']
+    }
+    let token: string | null = null
     if (typeof window !== 'undefined') {
-      const token = isTauri()
+      token = isRunningInTauri()
         ? await getAccessTokenSecure()
         : localStorage.getItem('axshare_access_token')
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`
-      }
+    }
+    if (token) {
+      config.headers = config.headers ?? {}
+      config.headers.Authorization = `Bearer ${token}`
     }
     return config
   },
@@ -78,6 +86,18 @@ apiClient.interceptors.response.use(
     }
 
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
+      const refreshToken =
+        typeof window !== 'undefined'
+          ? isRunningInTauri()
+            ? await getRefreshTokenSecure()
+            : localStorage.getItem('axshare_refresh_token')
+          : null
+
+      if (!refreshToken) {
+        // Nessun refresh token (es. login dev non lo emette) — non tentare refresh
+        return Promise.reject(error)
+      }
+
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject })
@@ -91,12 +111,8 @@ apiClient.interceptors.response.use(
       isRefreshing = true
 
       try {
-        const refreshToken = isTauri()
-          ? await getRefreshTokenSecure()
-          : localStorage.getItem('axshare_refresh_token')
-        if (!refreshToken) throw new Error('No refresh token')
 
-        const currentAccess = isTauri()
+        const currentAccess = isRunningInTauri()
           ? await getAccessTokenSecure()
           : localStorage.getItem('axshare_access_token')
 
@@ -118,10 +134,7 @@ apiClient.interceptors.response.use(
         return apiClient(originalRequest)
       } catch (refreshError) {
         processQueue(refreshError, null)
-        await clearTokensSecure()
-        if (typeof window !== 'undefined') {
-          window.location.href = '/login'
-        }
+        // NON cancellare i token — lascia decidere all'AuthContext
         return Promise.reject(refreshError)
       } finally {
         isRefreshing = false
@@ -142,6 +155,18 @@ apiClient.interceptors.response.use(
 // ─── Auth API ────────────────────────────────────────────────────────────────
 
 export const authApi = {
+  devLogin: (email: string, password: string) =>
+    apiClient.post<{ access_token: string; refresh_token?: string }>('/auth/login', {
+      email,
+      password,
+    }),
+
+  devRegister: (email: string, password: string) =>
+    apiClient.post<{ access_token: string; refresh_token?: string; user_id?: string }>(
+      '/auth/register',
+      { email, password }
+    ),
+
   webauthnRegisterBegin: (email: string, displayName?: string) =>
     apiClient.post<WebAuthnRegisterBeginResponse>(
       '/auth/webauthn/register/begin',
@@ -182,12 +207,24 @@ export const authApi = {
 
 export const usersApi = {
   getMe: () => apiClient.get<User>('/users/me'),
+  deleteKeys: () => apiClient.delete<{ message: string }>('/users/me/keys'),
 
   updateMe: (data: { display_name?: string }) =>
     apiClient.put<User>('/users/me', data),
 
   uploadPublicKey: (publicKeyPem: string) =>
     apiClient.post('/users/me/public-key', { public_key_pem: publicKeyPem }),
+
+  savePrivateKey: (encryptedPrivateKey: string) =>
+    apiClient.put('/users/me/private-key', {
+      encrypted_private_key: encryptedPrivateKey,
+    }),
+
+  getPrivateKey: () =>
+    apiClient.get<{
+      encrypted_private_key: string | null
+      public_key_pem: string | null
+    }>('/users/me/private-key'),
 
   getPublicKey: (userId: string) =>
     apiClient.get<{ public_key_pem: string }>(
@@ -316,9 +353,7 @@ export const filesApi = {
     const formData = new FormData()
     formData.append('file', encryptedBlob, 'encrypted_blob')
     formData.append('metadata', JSON.stringify(metadata))
-    return apiClient.post<{ file_id: string }>('/files/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    return apiClient.post<{ file_id: string }>('/files/upload', formData)
   },
 
   getMeta: (fileId: string) =>
@@ -335,9 +370,11 @@ export const filesApi = {
     }),
 
   getKey: (fileId: string) =>
-    apiClient.get<{ file_key_encrypted: string; encryption_iv: string }>(
-      `/files/${fileId}/key`
-    ),
+    apiClient.get<{
+      file_key_encrypted: string
+      encryption_iv: string
+      mime_type_encrypted?: string
+    }>(`/files/${fileId}/key`),
 
   uploadVersion: (
     fileId: string,
@@ -361,6 +398,23 @@ export const filesApi = {
     apiClient.post(
       `/files/${fileId}/versions/${versionNumber}/restore`
     ),
+
+  downloadVersion: (fileId: string, versionNumber: number) =>
+    apiClient.get<ArrayBuffer>(`/files/${fileId}/versions/${versionNumber}/download`, {
+      responseType: 'arraybuffer',
+    }),
+
+  deleteVersion: (fileId: string, versionNumber: number) =>
+    apiClient.delete<{ deleted: number }>(
+      `/files/${fileId}/versions/${versionNumber}`
+    ),
+
+  getVersionKey: (fileId: string, versionNumber: number) =>
+    apiClient.get<{
+      file_key_encrypted: string
+      encryption_iv: string
+      mime_type_encrypted?: string
+    }>(`/files/${fileId}/versions/${versionNumber}/key`),
 
   shareWithGroup: (
     fileId: string,
@@ -408,6 +462,9 @@ export const foldersApi = {
 
   listFiles: (folderId: string) =>
     apiClient.get<FileItem[]>(`/folders/${folderId}/files`),
+
+  listRootFiles: () =>
+    apiClient.get<RootFileItem[]>(`/folders/root/files`),
 }
 
 // ─── Permissions API ─────────────────────────────────────────────────────────

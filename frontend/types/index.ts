@@ -28,6 +28,15 @@ export interface FileItem {
   updated_at: string
 }
 
+/** Risposta GET /folders/root/files */
+export interface RootFileItem {
+  id: string
+  name_encrypted: string
+  size: number
+  current_version?: number
+  updated_at: string | null
+}
+
 export interface Folder {
   id: string
   name_encrypted: string
@@ -67,8 +76,11 @@ export interface GroupMember {
 
 export interface FileVersion {
   version_number: number
+  size: number
   created_at: string
-  size_bytes: number
+  created_by_email: string | null
+  comment: string | null
+  is_current: boolean
 }
 
 export interface ApiError {
@@ -94,8 +106,12 @@ export interface UploadMetadata {
   mime_type_encrypted: string
   file_key_encrypted: string
   encryption_iv: string
-  size: number
+  content_hash: string
+  size?: number
+  size_original?: number
   folder_id?: string
+  mime_category?: string
+  version_comment?: string
 }
 
 export interface WebAuthnRegisterBeginResponse {
