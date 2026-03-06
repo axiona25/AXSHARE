@@ -71,3 +71,6 @@ logs/
 
 # Stray / accidental
 -
+# Credenziali / connessioni esterne — MAI committare
+EXTERNAL CONNECTION.txt
+*CONNECTION*.txt
