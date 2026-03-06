@@ -1,0 +1,238 @@
+"""Endpoint share link (creazione, revoca, download pubblico) e eventi sync."""
+
+import uuid
+from datetime import datetime, timezone
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import get_settings
+from app.database import get_db
+from app.dependencies import get_current_user
+from app.models.file import File
+from app.models.share_link import ShareLink
+from app.models.user import User
+from app.schemas.share_link import (
+    ShareLinkAccessRequest,
+    ShareLinkCreate,
+    ShareLinkResponse,
+)
+from app.core.audit_actions import AuditAction
+from app.core.notification_types import NotificationSeverity, NotificationType
+from app.services.audit_service import AuditService
+from app.services.notification_service import NotificationService
+from app.services.share_link_service import ShareLinkService
+
+router = APIRouter(tags=["share-links"])
+sync_router = APIRouter(prefix="/sync", tags=["sync"])
+
+
+def _link_to_response(link: ShareLink) -> ShareLinkResponse:
+    settings = get_settings()
+    base = getattr(settings, "frontend_url", "http://localhost:3000")
+    return ShareLinkResponse(
+        id=link.id,
+        file_id=link.file_id,
+        token=link.token,
+        is_password_protected=link.is_password_protected,
+        expires_at=link.expires_at,
+        max_downloads=link.max_downloads,
+        download_count=link.download_count,
+        is_active=link.is_active,
+        label=link.label,
+        created_at=link.created_at,
+        share_url=f"{base}/share/{link.token}",
+    )
+
+
+# ─── Owner endpoints ─────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/files/{file_id}/share-links",
+    response_model=ShareLinkResponse,
+    status_code=201,
+)
+async def create_share_link(
+    file_id: uuid.UUID,
+    body: ShareLinkCreate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(File).where(
+            File.id == file_id,
+            File.owner_id == current_user.id,
+            File.is_destroyed.is_(False),
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="File non trovato")
+
+    link = await ShareLinkService.create_link(
+        db=db,
+        file_id=file_id,
+        owner_id=current_user.id,
+        file_key_encrypted_for_link=body.file_key_encrypted_for_link,
+        password=body.password,
+        expires_at=body.expires_at,
+        max_downloads=body.max_downloads,
+        label=body.label,
+    )
+    await AuditService.log_event(
+        db,
+        action=AuditAction.SHARE_LINK_CREATE,
+        actor=current_user,
+        resource_type="file",
+        resource_id=str(file_id),
+        details={"link_id": str(link.id), "label": body.label},
+        request=request,
+    )
+    return _link_to_response(link)
+
+
+@router.get(
+    "/files/{file_id}/share-links",
+    response_model=List[ShareLinkResponse],
+)
+async def list_share_links(
+    file_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ShareLink)
+        .where(
+            ShareLink.file_id == file_id,
+            ShareLink.owner_id == current_user.id,
+        )
+        .order_by(ShareLink.created_at.desc())
+    )
+    return [_link_to_response(l) for l in result.scalars().all()]
+
+
+@router.delete("/share-links/{link_id}", status_code=204)
+async def revoke_share_link(
+    link_id: uuid.UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ShareLink).where(
+            ShareLink.id == link_id,
+            ShareLink.owner_id == current_user.id,
+        )
+    )
+    link = result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link non trovato")
+    link.is_active = False
+    link.revoked_at = datetime.now(timezone.utc)
+    await db.commit()
+    await AuditService.log_event(
+        db,
+        action=AuditAction.SHARE_LINK_REVOKE,
+        actor=current_user,
+        resource_type="file",
+        resource_id=str(link.file_id),
+        details={"link_id": str(link_id)},
+        request=request,
+    )
+
+
+# ─── Public endpoint (no auth) ───────────────────────────────────────────────
+
+
+@router.get("/public/share/{token}")
+async def get_share_link_info(
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Info pubblica sul link (senza scaricare il file)."""
+    result = await db.execute(
+        select(ShareLink).where(
+            ShareLink.token == token,
+            ShareLink.is_active.is_(True),
+        )
+    )
+    link = result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link non trovato")
+    now = datetime.now(timezone.utc)
+    if link.expires_at and link.expires_at < now:
+        raise HTTPException(status_code=410, detail="Link scaduto")
+    return {
+        "token": token,
+        "is_password_protected": link.is_password_protected,
+        "expires_at": (
+            link.expires_at.isoformat() if link.expires_at else None
+        ),
+        "max_downloads": link.max_downloads,
+        "download_count": link.download_count,
+        "label": link.label,
+    }
+
+
+@router.post("/public/share/{token}/download")
+async def download_via_share_link(
+    token: str,
+    body: ShareLinkAccessRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Scarica file tramite link pubblico (con o senza password)."""
+    link, file = await ShareLinkService.get_link_for_download(
+        db, token, body.password, request
+    )
+    await NotificationService.create(
+        db=db,
+        user_id=link.owner_id,
+        type=NotificationType.SHARE_LINK_ACCESSED,
+        title="Link condivisione usato",
+        body="Qualcuno ha scaricato un tuo file tramite link.",
+        resource_type="file",
+        resource_id=str(link.file_id),
+        severity=NotificationSeverity.INFO,
+    )
+    return {
+        "file_id": str(file.id),
+        "name_encrypted": file.name_encrypted,
+        "file_key_encrypted_for_link": link.file_key_encrypted_for_link,
+        "encryption_iv": file.encryption_iv,
+        "size_bytes": file.size_bytes,
+        "download_count": link.download_count,
+    }
+
+
+# ─── Sync events (propagazione revoca) ───────────────────────────────────────
+
+
+@sync_router.get("/events")
+async def get_sync_events(
+    since: datetime = Query(..., description="ISO datetime dall'ultimo check"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.sync_event import SyncEvent
+
+    result = await db.execute(
+        select(SyncEvent)
+        .where(SyncEvent.created_at > since)
+        .order_by(SyncEvent.created_at)
+        .limit(100)
+    )
+    events = result.scalars().all()
+    return [
+        {
+            "id": str(e.id),
+            "file_id": str(e.file_id) if e.file_id else None,
+            "event_type": e.event_type,
+            "created_at": e.created_at.isoformat(),
+            "payload": e.payload,
+        }
+        for e in events
+    ]

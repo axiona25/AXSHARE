@@ -1,0 +1,57 @@
+{
+  "common": {
+    "loading": "Caricamento...",
+    "error": "Si è verificato un errore",
+    "save": "Salva",
+    "cancel": "Annulla",
+    "confirm": "Conferma",
+    "delete": "Elimina",
+    "back": "Indietro",
+    "next": "Avanti",
+    "skip": "Salta"
+  },
+  "auth": {
+    "login": "Accedi",
+    "register": "Registrati",
+    "logout": "Esci",
+    "email": "Email",
+    "password": "Password",
+    "confirm_password": "Conferma password",
+    "passphrase": "Passphrase",
+    "login_with_passkey": "Accedi con passkey",
+    "no_account": "Non hai un account?",
+    "have_account": "Hai già un account?"
+  },
+  "dashboard": {
+    "title": "I miei file",
+    "upload": "Carica file",
+    "new_folder": "Nuova cartella",
+    "search": "Cerca file",
+    "empty": "Nessun file. Carica il primo file.",
+    "files": "File",
+    "folders": "Cartelle"
+  },
+  "file": {
+    "download": "Scarica",
+    "details": "Dettagli",
+    "delete": "Elimina",
+    "share": "Condividi",
+    "sign": "Firma",
+    "verify": "Verifica firma",
+    "destroyed": "Distrutto",
+    "signed": "Firmato"
+  },
+  "settings": {
+    "title": "Impostazioni",
+    "profile": "Profilo",
+    "security": "Sicurezza",
+    "sharing": "Condivisione",
+    "gdpr": "Privacy e GDPR"
+  },
+  "errors": {
+    "passphrase_mismatch": "Le passphrase non coincidono",
+    "passphrase_too_short": "La passphrase deve essere almeno 8 caratteri",
+    "upload_failed": "Errore durante l'upload",
+    "download_failed": "Errore durante il download"
+  }
+}

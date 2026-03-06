@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block subject %}Richiesta cancellazione account ricevuta — AXSHARE{% endblock %}
+{% block content %}
+<h2>Richiesta di cancellazione account ricevuta</h2>
+<p>
+  Abbiamo ricevuto la tua richiesta di cancellazione account
+  ai sensi dell'Art. 17 del GDPR.
+</p>
+<dl>
+  <dt>ID richiesta</dt><dd><code>{{ request_id }}</code></dd>
+  <dt>Data richiesta</dt><dd>{{ requested_at }}</dd>
+  <dt>Completamento entro</dt><dd>30 giorni dalla richiesta</dd>
+</dl>
+<div class="alert danger">
+  <strong>Attenzione:</strong> tutti i tuoi file cifrati, le chiavi
+  e i dati personali saranno eliminati in modo irreversibile.
+</div>
+<p>
+  Se non hai fatto questa richiesta, contattaci immediatamente
+  a <a href="mailto:privacy@axshare.io">privacy@axshare.io</a>.
+</p>
+{% endblock %}

@@ -1,0 +1,57 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "error": "An error occurred",
+    "save": "Save",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "back": "Back",
+    "next": "Next",
+    "skip": "Skip"
+  },
+  "auth": {
+    "login": "Sign in",
+    "register": "Create account",
+    "logout": "Sign out",
+    "email": "Email",
+    "password": "Password",
+    "confirm_password": "Confirm password",
+    "passphrase": "Passphrase",
+    "login_with_passkey": "Sign in with passkey",
+    "no_account": "Don't have an account?",
+    "have_account": "Already have an account?"
+  },
+  "dashboard": {
+    "title": "My files",
+    "upload": "Upload file",
+    "new_folder": "New folder",
+    "search": "Search files",
+    "empty": "No files. Upload your first file.",
+    "files": "Files",
+    "folders": "Folders"
+  },
+  "file": {
+    "download": "Download",
+    "details": "Details",
+    "delete": "Delete",
+    "share": "Share",
+    "sign": "Sign",
+    "verify": "Verify signature",
+    "destroyed": "Destroyed",
+    "signed": "Signed"
+  },
+  "settings": {
+    "title": "Settings",
+    "profile": "Profile",
+    "security": "Security",
+    "sharing": "Sharing",
+    "gdpr": "Privacy & GDPR"
+  },
+  "errors": {
+    "passphrase_mismatch": "Passphrases do not match",
+    "passphrase_too_short": "Passphrase must be at least 8 characters",
+    "upload_failed": "Upload failed",
+    "download_failed": "Download failed"
+  }
+}

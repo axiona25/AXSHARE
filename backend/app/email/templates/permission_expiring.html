@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block subject %}Permesso in scadenza su AXSHARE{% endblock %}
+{% block content %}
+<h2>Un permesso sta per scadere</h2>
+<div class="alert">
+  ⚠️ Il tuo accesso al file scadrà tra
+  <strong>{{ hours_remaining }} ore</strong>.
+</div>
+<p>
+  Per rinnovare l'accesso contatta il proprietario del file.
+</p>
+{% endblock %}

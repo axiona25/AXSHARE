@@ -1,0 +1,108 @@
+groups:
+  - name: axshare.infrastructure
+    interval: 1m
+    rules:
+      # Disco >85%
+      - alert: DiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} /
+           node_filesystem_size_bytes{mountpoint="/"}) * 100 < 15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Spazio disco critico"
+          description: "Disco {{ $value | humanizePercentage }} disponibile su {{ $labels.instance }}"
+
+      # RAM >90%
+      - alert: MemoryPressure
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memoria quasi esaurita"
+          description: "Utilizzo RAM: {{ $value | humanizePercentage }}"
+
+      # Backend down
+      - alert: BackendDown
+        expr: up{job="axshare-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend AXSHARE non raggiungibile"
+          description: "Il backend è down da più di 1 minuto."
+
+      # PostgreSQL down
+      - alert: PostgreSQLDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL non raggiungibile"
+
+  - name: axshare.application
+    interval: 1m
+    rules:
+      # Tasso errori HTTP >1%
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) /
+          sum(rate(http_requests_total[5m])) * 100 > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasso errori HTTP elevato"
+          description: "{{ $value | humanizePercentage }} delle richieste stanno fallendo"
+
+      # Latenza P99 >2s
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latenza P99 elevata"
+          description: "P99 latenza: {{ $value }}s su {{ $labels.endpoint }}"
+
+      # Upload cifrati falliti >5%
+      - alert: EncryptionFailures
+        expr: |
+          sum(rate(axshare_crypto_operations_total{operation="encrypt", status="error"}[5m])) /
+          sum(rate(axshare_crypto_operations_total{operation="encrypt"}[5m])) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Errori cifratura file elevati"
+
+  - name: axshare.security
+    interval: 30s
+    rules:
+      # Brute-force rilevato
+      - alert: BruteForceDetected
+        expr: |
+          sum(rate(axshare_auth_failures_total[5m])) by (ip) > 10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Possibile attacco brute-force"
+          description: "IP {{ $labels.ip }} ha {{ $value }} tentativi/min falliti"
+
+      # Token JWT invalidi in aumento
+      - alert: InvalidJWTSpike
+        expr: |
+          sum(rate(axshare_auth_failures_total{reason="invalid_jwt"}[5m])) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spike di JWT invalidi"

@@ -1,0 +1,73 @@
+# AXSHARE — Git ignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+out/
+.npm
+*.tsbuildinfo
+
+# Rust / Tauri
+target/
+desktop/src-tauri/target/
+
+# Env e segreti — MAI committare
+.env
+.env.prod
+.env.local
+.env.*.local
+*.env
+*.key
+*.pem
+*.gpg
+infra/nginx/certs/
+infra/vault/policies/*.token
+.vault-token
+
+# Database / backup
+*.sql
+*.dump
+/backups/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Docker
+.docker/
+
+# Terraform state — MAI committare
+*.tfstate
+*.tfstate.backup
+.terraform/
+*.tfvars
+
+# Stray / accidental
+-

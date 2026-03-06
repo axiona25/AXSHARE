@@ -1,0 +1,51 @@
+{
+  "title": "AXSHARE — Sicurezza",
+  "uid": "axshare-security",
+  "tags": ["axshare", "security"],
+  "schemaVersion": 38,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Auth failures by IP",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "expr": "sum(rate(axshare_auth_failures_total[5m])) by (ip)",
+          "legendFormat": "{{ip}}",
+          "refId": "A"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "id": 2,
+      "title": "Invalid JWT rate",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 6 },
+      "targets": [
+        {
+          "expr": "sum(rate(axshare_auth_failures_total{reason=\"invalid_jwt\"}[5m]))",
+          "legendFormat": "invalid_jwt",
+          "refId": "A"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "id": 3,
+      "title": "Security-related logs",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "{service=~\"backend|frontend\"} |~ \"(?i)(auth|login|jwt|fail|denied|brute)\"",
+          "refId": "A"
+        }
+      ],
+      "datasource": { "type": "loki", "uid": "loki" }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block subject %}⚠️ Avviso di sicurezza — AXSHARE{% endblock %}
+{% block content %}
+<h2>Avviso di sicurezza</h2>
+<div class="alert danger">
+  <strong>{{ alert_type }}</strong>
+</div>
+<p>{{ message }}</p>
+{% if details %}
+<dl>
+  {% for key, value in details.items() %}
+  <dt>{{ key }}</dt><dd>{{ value }}</dd>
+  {% endfor %}
+</dl>
+{% endif %}
+<p>
+  Se non riconosci questa attività, cambia immediatamente la password
+  e contattaci a <a href="mailto:security@axshare.io">security@axshare.io</a>.
+</p>
+{% endblock %}

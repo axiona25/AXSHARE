@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block subject %}{{ owner_email }} ha condiviso un file con te{% endblock %}
+{% block content %}
+<h2>File condiviso</h2>
+<p>
+  <strong>{{ owner_email }}</strong> ha condiviso un file con te
+  tramite AXSHARE.
+</p>
+{% if label %}
+<p>Etichetta: <strong>{{ label }}</strong></p>
+{% endif %}
+{% if is_password_protected %}
+<div class="alert">
+  🔑 Questo file è protetto da password.
+  Contatta <strong>{{ owner_email }}</strong> per ottenerla.
+</div>
+{% endif %}
+{% if expires_at %}
+<p>⏰ Il link scade il: <strong>{{ expires_at }}</strong></p>
+{% endif %}
+<p style="text-align: center; margin: 32px 0;">
+  <a href="{{ share_url }}" class="btn">Scarica file</a>
+</p>
+{% endblock %}

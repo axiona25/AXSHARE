@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block subject %}Hai ricevuto un accesso a file su AXSHARE{% endblock %}
+{% block content %}
+<h2>Sei stato invitato ad accedere a dei file</h2>
+<p>
+  <strong>{{ owner_email }}</strong> ti ha condiviso
+  {{ file_count }} file su AXSHARE.
+</p>
+{% if expires_in_hours %}
+<div class="alert">
+  ⏰ Questo invito scade tra <strong>{{ expires_in_hours }} ore</strong>.
+</div>
+{% endif %}
+<p style="text-align: center; margin: 32px 0;">
+  <a href="{{ invite_url }}" class="btn">Accetta invito e accedi ai file</a>
+</p>
+<p>
+  <small>
+    Se non ti aspettavi questo invito puoi ignorare questa email.
+    Il link è monouso e scade automaticamente.
+  </small>
+</p>
+{% endblock %}

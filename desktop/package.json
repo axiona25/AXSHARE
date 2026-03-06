@@ -1,0 +1,13 @@
+{
+  "name": "axshare-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "cargo tauri dev",
+    "build": "cargo tauri build",
+    "build:mac": "cargo tauri build --target universal-apple-darwin",
+    "build:win": "cargo tauri build --target x86_64-pc-windows-msvc",
+    "test": "cd src-tauri && cargo test",
+    "icons": "bash scripts/generate-icons.sh"
+  }
+}
