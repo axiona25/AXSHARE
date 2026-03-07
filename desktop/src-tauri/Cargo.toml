@@ -1,6 +1,6 @@
 [package]
 name = "axshare-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "AXSHARE Desktop Client"
 authors = ["AXSHARE Team"]
 license = "UNLICENSED"

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # App
     app_name: str = "AXSHARE"
-    app_version: str = "0.1.0"
+    app_version: str = "0.1.2"
     debug: bool = False
     environment: str = "development"
 
