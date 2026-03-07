@@ -148,6 +148,75 @@ async function encryptJpeg(jpegBytes: Uint8Array): Promise<ThumbnailResult> {
 }
 
 /**
+ * Genera un data URL (JPEG) per anteprima da File (immagine o PDF), senza cifratura.
+ * Usato per mostrare l'anteprima nelle card quando la thumbnail salvata non c'è ancora.
+ */
+export async function generateThumbnailPreviewUrl(
+  file: File
+): Promise<string | null> {
+  const type = file.type?.toLowerCase() ?? ''
+  if (type.startsWith('image/')) {
+    return new Promise((resolve) => {
+      const img = new Image()
+      const url = URL.createObjectURL(file)
+      img.onload = () => {
+        URL.revokeObjectURL(url)
+        try {
+          const scale = Math.min(THUMB_SIZE / img.naturalWidth, THUMB_SIZE / img.naturalHeight, 1)
+          const w = Math.round(img.naturalWidth * scale)
+          const h = Math.round(img.naturalHeight * scale)
+          const canvas = document.createElement('canvas')
+          canvas.width = w
+          canvas.height = h
+          const ctx = canvas.getContext('2d')
+          if (!ctx) {
+            resolve(null)
+            return
+          }
+          ctx.drawImage(img, 0, 0, w, h)
+          resolve(canvas.toDataURL('image/jpeg', THUMB_QUALITY))
+        } catch {
+          resolve(null)
+        }
+      }
+      img.onerror = () => {
+        URL.revokeObjectURL(url)
+        resolve(null)
+      }
+      img.src = url
+    })
+  }
+  if (type === 'application/pdf') {
+    try {
+      const pdfjsLib = await import('pdfjs-dist')
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+      const arrayBuffer = await file.arrayBuffer()
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+      const page = await pdf.getPage(1)
+      const viewport = page.getViewport({ scale: 1 })
+      const scale = Math.min(
+        THUMB_SIZE / viewport.width,
+        THUMB_SIZE / viewport.height
+      )
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.round(viewport.width * scale)
+      canvas.height = Math.round(viewport.height * scale)
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return null
+      const viewportScaled = page.getViewport({ scale })
+      await page.render({
+        canvasContext: ctx,
+        viewport: viewportScaled,
+      }).promise
+      return canvas.toDataURL('image/jpeg', THUMB_QUALITY)
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+/**
  * Decifra e crea un object URL per la thumbnail.
  * Ricordati di chiamare URL.revokeObjectURL() dopo l'uso.
  */

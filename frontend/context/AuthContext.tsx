@@ -32,6 +32,8 @@ interface AuthContextValue {
   isAuth: boolean
   sessionPrivateKey: CryptoKey | null
   hasSessionKey: boolean
+  /** True mentre si tenta il ripristino della chiave da PIN in sessionStorage (evita flash modale PIN al refresh). */
+  isRestoringSessionKey: boolean
   unlockPrivateKey: (passphrase: string) => Promise<boolean>
   /** Imposta la chiave di sessione (es. dopo sblocco con PIN). */
   setSessionKey: (key: CryptoKey | null) => void
@@ -44,10 +46,13 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+const SESSION_PIN_KEY = 'axshare_session_pin'
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [sessionPrivateKey, setSessionPrivateKey] = useState<CryptoKey | null>(null)
+  const [isRestoringSessionKey, setIsRestoringSessionKey] = useState(false)
 
   const refreshUser = useCallback(async () => {
     console.log('[AUTH] refreshUser start')
@@ -57,6 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (!token) {
         console.log('[AUTH] Nessun token, set user null')
+        if (typeof window !== 'undefined') sessionStorage.removeItem(SESSION_PIN_KEY)
         setUser(null)
         setIsLoading(false)
         return
@@ -67,6 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (expired) {
         console.log('[AUTH] Token scaduto, esco')
+        if (typeof window !== 'undefined') sessionStorage.removeItem(SESSION_PIN_KEY)
         setUser(null)
         setIsLoading(false)
         return
@@ -85,14 +92,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const response = await getMeWithTimeout
       console.log('[AUTH] getMe risposta:', response.data?.email)
-      setUser(response.data)
+      const userData = response.data
+      setUser(userData)
+      if (userData?.has_public_key && typeof window !== 'undefined' && sessionStorage.getItem(SESSION_PIN_KEY)) {
+        setIsRestoringSessionKey(true)
+      }
     } catch (err: unknown) {
       console.error('[AUTH] refreshUser error:', err)
       const status = (err as { response?: { status?: number } })?.response?.status
       setUser(null)
-      if (status === 401) {
+      if (status === 401 && typeof window !== 'undefined') {
+        sessionStorage.removeItem(SESSION_PIN_KEY)
         // Token rifiutato dal backend; non cancellare token (es. dev monouso)
-      } else {
+      } else if (status !== 401) {
         await clearTokensSecure()
       }
     } finally {
@@ -132,6 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearSessionKey = useCallback(() => {
     setSessionPrivateKey(null)
+    if (typeof window !== 'undefined') sessionStorage.removeItem(SESSION_PIN_KEY)
   }, [])
 
   const logout = useCallback(async () => {
@@ -145,6 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         /* ignora */
       }
     }
+    if (typeof window !== 'undefined') sessionStorage.removeItem(SESSION_PIN_KEY)
     await clearTokensSecure()
     setUser(null)
     setSessionPrivateKey(null)
@@ -153,6 +167,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refreshUser()
   }, [refreshUser])
+
+  // Ripristino chiave di sessione da PIN memorizzato finché il JWT è valido (evita di chiedere il PIN a ogni refresh)
+  useEffect(() => {
+    if (typeof window === 'undefined' || isLoading || !user?.has_public_key || sessionPrivateKey !== null) return
+    const pin = sessionStorage.getItem(SESSION_PIN_KEY)
+    if (!pin) {
+      setIsRestoringSessionKey(false)
+      return
+    }
+
+    let cancelled = false
+    usersApi
+      .getPrivateKey()
+      .then((resp) => {
+        if (cancelled) return
+        const bundle = resp.data?.encrypted_private_key
+        if (!bundle) return
+        return keyManager.unlockWithPin(user.email, pin, bundle)
+      })
+      .then((key) => {
+        if (cancelled || !key) return
+        setSessionPrivateKey(key)
+      })
+      .catch(() => {
+        if (!cancelled && typeof window !== 'undefined') sessionStorage.removeItem(SESSION_PIN_KEY)
+      })
+      .finally(() => {
+        if (!cancelled) setIsRestoringSessionKey(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isLoading, user, sessionPrivateKey])
 
   useEffect(() => {
     initSentry()
@@ -166,6 +213,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuth: !!user,
         sessionPrivateKey,
         hasSessionKey,
+        isRestoringSessionKey,
         unlockPrivateKey,
         setSessionKey,
         clearSessionKey,

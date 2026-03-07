@@ -26,6 +26,8 @@ export interface FileItem {
   self_destruct_at: string | null
   created_at: string
   updated_at: string
+  /** True se il file (es. PDF) è stato firmato digitalmente. */
+  is_signed?: boolean
 }
 
 /** Risposta GET /folders/root/files */
@@ -44,6 +46,8 @@ export interface Folder {
   owner_id: string
   is_destroyed: boolean
   created_at: string
+  updated_at?: string | null
+  total_size_bytes?: number
 }
 
 export interface Permission {

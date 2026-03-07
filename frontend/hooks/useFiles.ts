@@ -106,6 +106,27 @@ export function useFileMutations() {
     []
   )
 
+  const deleteFolder = useCallback(
+    async (folderId: string, parentId?: string) => {
+      await foldersApi.destroy(folderId)
+      await mutate(parentId ? `/folders/${parentId}/children` : '/folders/')
+    },
+    []
+  )
+
+  const renameFolder = useCallback(
+    async (
+      folderId: string,
+      nameEncrypted: string,
+      folderKeyEncrypted?: string,
+      parentId?: string
+    ) => {
+      await foldersApi.rename(folderId, nameEncrypted, folderKeyEncrypted)
+      await mutate(parentId ? `/folders/${parentId}/children` : '/folders/')
+    },
+    []
+  )
+
   const restoreVersion = useCallback(
     async (fileId: string, versionNumber: number) => {
       await filesApi.restoreVersion(fileId, versionNumber)
@@ -135,11 +156,55 @@ export function useFileMutations() {
     []
   )
 
+  const moveFile = useCallback(
+    async (
+      fileId: string,
+      targetFolderId: string | null,
+      sourceFolderId?: string | null
+    ) => {
+      await filesApi.move(fileId, targetFolderId)
+      const sourceKey =
+        sourceFolderId != null && sourceFolderId !== ''
+          ? `/folders/${sourceFolderId}/files`
+          : '/folders/root/files'
+      const targetKey =
+        targetFolderId != null && targetFolderId !== ''
+          ? `/folders/${targetFolderId}/files`
+          : '/folders/root/files'
+      await Promise.all([mutate(sourceKey), mutate(targetKey)])
+    },
+    []
+  )
+
+  const moveFolder = useCallback(
+    async (
+      folderId: string,
+      targetParentId: string | null,
+      sourceParentId?: string | null
+    ) => {
+      await foldersApi.move(folderId, targetParentId)
+      const sourceKey =
+        sourceParentId != null && sourceParentId !== ''
+          ? `/folders/${sourceParentId}/children`
+          : '/folders/'
+      const targetKey =
+        targetParentId != null && targetParentId !== ''
+          ? `/folders/${targetParentId}/children`
+          : '/folders/'
+      await Promise.all([mutate(sourceKey), mutate(targetKey)])
+    },
+    []
+  )
+
   return {
     createFolder,
     deleteFile,
+    deleteFolder,
+    renameFolder,
     restoreVersion,
     deleteVersion,
     setSelfDestruct,
+    moveFile,
+    moveFolder,
   }
 }

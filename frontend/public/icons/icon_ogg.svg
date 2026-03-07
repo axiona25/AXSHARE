@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 96" width="80" height="96">
+  <path d="M12 8 L56 8 L68 20 L68 88 L12 88 Z" fill="#00838F" opacity="0.15" transform="translate(2,2)"/>
+  <path d="M12 8 L56 8 L68 20 L68 88 L12 88 Z" fill="#E0F7FA"/>
+  <path d="M56 8 L56 20 L68 20 Z" fill="#B2EBF2"/>
+  <path d="M56 8 L56 20 L68 20" fill="none" stroke="#00838F" stroke-width="0.8" opacity="0.4"/>
+  <rect x="8" y="58" width="64" height="26" rx="5" ry="5" fill="#00838F"/>
+  <text x="40" y="76" font-family="Arial Black,sans-serif" font-weight="900" font-size="18" fill="white" text-anchor="middle">OGG</text>
+</svg>

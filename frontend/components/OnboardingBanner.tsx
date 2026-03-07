@@ -60,7 +60,18 @@ export function OnboardingBanner() {
   const current = STEPS[step]
 
   return (
-    <aside data-testid="onboarding-banner" role="complementary">
+    <aside
+      data-testid="onboarding-banner"
+      role="complementary"
+      style={{
+        marginBottom: 16,
+        borderRadius: 12,
+        border: '1px solid var(--ax-border)',
+        background: 'white',
+        padding: '12px 16px',
+        fontSize: 13,
+      }}
+    >
       <h3>{current.title}</h3>
       <p>{current.body}</p>
       <nav>

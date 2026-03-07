@@ -159,6 +159,9 @@ class ReportService:
         total_size = int(sr.total_size or 0)
         avg_size = float(sr.avg_size or 0)
 
+        user = await db.get(User, user_id)
+        quota_bytes = int(user.storage_quota_bytes) if user else 1_073_741_824
+
         return UserDashboard(
             storage=StorageStats(
                 total_files=sr.total_files or 0,
@@ -166,6 +169,7 @@ class ReportService:
                 total_size_mb=round(total_size / 1_048_576, 2),
                 largest_file_bytes=int(sr.max_size or 0),
                 average_file_bytes=round(avg_size, 0),
+                storage_quota_bytes=quota_bytes,
             ),
             sharing=SharingStats(
                 active_share_links=active_links,

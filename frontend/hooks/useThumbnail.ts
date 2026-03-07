@@ -16,6 +16,8 @@ import { keyManager } from '@/lib/keyManager'
 export interface UseThumbnailOptions {
   /** Passphrase per decifrare la chiave privata e mostrare la thumbnail. Se manca, hasThumb è true ma objectUrl resta null. */
   passphrase?: string | null
+  /** Chiave privata già sbloccata (es. da AuthContext). Se fornita, usata al posto di passphrase per decifrare. */
+  sessionPrivateKey?: CryptoKey | null
 }
 
 /**
@@ -26,7 +28,7 @@ export function useThumbnail(
   fileId: string,
   options: UseThumbnailOptions = {}
 ) {
-  const { passphrase } = options
+  const { passphrase, sessionPrivateKey } = options
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const { user } = useAuthContext()
@@ -38,13 +40,14 @@ export function useThumbnail(
 
   const objectUrlRef = useRef<string | null>(null)
 
+  const hasUnlock = !!sessionPrivateKey || (passphrase != null && passphrase !== '')
+
   useEffect(() => {
+    const encKey = thumbData?.thumbnail_key_encrypted
     if (
       !thumbData?.thumbnail_encrypted ||
-      !thumbData?.thumbnail_key_encrypted ||
-      !user ||
-      passphrase == null ||
-      passphrase === ''
+      !encKey ||
+      !hasUnlock
     ) {
       return
     }
@@ -52,9 +55,13 @@ export function useThumbnail(
     let cancelled = false
     ;(async () => {
       try {
-        const privateKey = await keyManager.getPrivateKey(user.id, passphrase)
-        const encKey = thumbData.thumbnail_key_encrypted
-        if (!privateKey || cancelled || !encKey) return
+        let privateKey: CryptoKey | null = null
+        if (sessionPrivateKey) {
+          privateKey = sessionPrivateKey
+        } else if (user && passphrase) {
+          privateKey = await keyManager.getPrivateKey(user.id, passphrase)
+        }
+        if (!privateKey || cancelled) return
         const keyBytes = await decryptFileKeyWithRSA(encKey, privateKey)
         const keyHex = bytesToHex(keyBytes)
         const url = await decryptThumbnail(
@@ -81,7 +88,7 @@ export function useThumbnail(
       }
       setObjectUrl(null)
     }
-  }, [thumbData, user, passphrase])
+  }, [thumbData, user, passphrase, sessionPrivateKey, hasUnlock])
 
   const generateAndUpload = useCallback(
     async (file: File, userPassphrase: string): Promise<boolean> => {

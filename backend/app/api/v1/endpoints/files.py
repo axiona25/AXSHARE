@@ -7,7 +7,7 @@ import asyncio
 import io
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.event_bus import event_bus
 from app.database import get_db
 from app.dependencies import get_current_user, get_current_user_sse
-from app.models.file import File as FileModel, FileVersion
+from app.models.file import File as FileModel, FileVersion, Folder
 from app.models.permission import Permission, PermissionLevel
 from app.models.user import User
 from app.core.audit_actions import AuditAction
@@ -46,6 +46,12 @@ class SelfDestructRequest(BaseModel):
 
     after_downloads: Optional[int] = None
     destruct_at: Optional[datetime] = None
+
+
+class MoveFileRequest(BaseModel):
+    """Body per spostare un file in un'altra cartella."""
+
+    folder_id: Optional[str] = None  # null = root
 
 
 class FileUploadMetadata(BaseModel):
@@ -119,9 +125,24 @@ async def upload_file(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Metadati non validi: {e}")
 
-    file_id = uuid.uuid4()
     encrypted_data = await file.read()
+    file_size = len(encrypted_data)
 
+    # Deduplicazione: stesso owner, stessa size, caricato negli ultimi 10 secondi
+    ten_seconds_ago = datetime.now(timezone.utc) - timedelta(seconds=10)
+    existing = await db.execute(
+        select(FileModel).where(
+            FileModel.owner_id == current_user.id,
+            FileModel.size_bytes == file_size,
+            FileModel.is_destroyed.is_(False),
+            FileModel.created_at >= ten_seconds_ago,
+        )
+    )
+    duplicate = existing.scalar_one_or_none()
+    if duplicate:
+        return {"file_id": str(duplicate.id), "storage_path": duplicate.storage_path, "deduplicated": True}
+
+    file_id = uuid.uuid4()
     storage = get_storage_service()
     object_name = await storage.upload_encrypted_file(
         current_user.id,
@@ -233,6 +254,45 @@ async def _get_file_with_write_permission(
     if perm is None or not _has_write_permission(file, current_user, perm):
         raise HTTPException(status_code=403, detail="Permesso di scrittura negato")
     return file
+
+
+@router.patch("/{file_id}")
+async def move_file(
+    file_id: uuid.UUID,
+    body: MoveFileRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sposta un file in un'altra cartella (folder_id null = root)."""
+    file = await _get_file_with_write_permission(file_id, current_user, db)
+    if file.is_destroyed:
+        raise HTTPException(status_code=410, detail="File eliminato")
+    folder_uuid = None
+    if body.folder_id is not None and body.folder_id.strip() != "":
+        try:
+            folder_uuid = uuid.UUID(body.folder_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="folder_id non valido")
+        folder_result = await db.execute(
+            select(Folder).where(
+                Folder.id == folder_uuid,
+                Folder.owner_id == current_user.id,
+                Folder.is_destroyed.is_(False),
+            )
+        )
+        if folder_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Cartella di destinazione non trovata")
+    file.folder_id = folder_uuid
+    await db.commit()
+    await event_bus.publish(
+        str(current_user.id),
+        {
+            "type": "file_updated",
+            "file_id": str(file_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return {"moved": True, "folder_id": str(folder_uuid) if folder_uuid else None}
 
 
 @router.get("/{file_id}")

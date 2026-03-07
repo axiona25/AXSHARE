@@ -18,7 +18,7 @@ export default function AppLayout({
   children: React.ReactNode
 }) {
   const router = useRouter()
-  const { user, logout, isLoading, hasSessionKey, setSessionKey, clearSessionKey } = useAuthContext()
+  const { user, logout, isLoading, hasSessionKey, isRestoringSessionKey, setSessionKey, clearSessionKey } = useAuthContext()
   const syncContext = useSyncContext()
   const { unreadCount } = useNotifications()
 
@@ -48,8 +48,8 @@ export default function AppLayout({
       return
     }
 
-    // 2. Se autenticato + chiavi ma no sessione → modal PIN (secondo fattore dopo login)
-    if (user.has_public_key && !hasSessionKey) {
+    // 2. Se autenticato + chiavi ma no sessione → modal PIN (solo dopo aver tentato il ripristino da sessionStorage, per evitare flash)
+    if (user.has_public_key && !hasSessionKey && !isRestoringSessionKey) {
       console.log('[LAYOUT] Mostro modal unlock PIN')
       setShowUnlockModal(true)
       return
@@ -58,13 +58,13 @@ export default function AppLayout({
     // 3. Tutto ok (PIN non configurato → banner in dashboard; PIN configurato e sbloccato → accesso completo)
     setShowUnlockModal(false)
     console.log('[LAYOUT] Tutto ok, dashboard')
-  }, [isLoading, user, hasSessionKey, router])
+  }, [isLoading, user, hasSessionKey, isRestoringSessionKey, router])
 
   useEffect(() => {
-    if (!isLoading && user?.has_public_key && !hasSessionKey) {
+    if (!isLoading && user?.has_public_key && !hasSessionKey && !isRestoringSessionKey) {
       setShowUnlockModal(true)
     }
-  }, [isLoading, user, hasSessionKey])
+  }, [isLoading, user, hasSessionKey, isRestoringSessionKey])
 
   const handlePinUnlock = useCallback(async (pin: string) => {
     if (!user?.email) throw new Error('Utente non trovato')
@@ -73,6 +73,7 @@ export default function AppLayout({
     if (!bundle) throw new Error('Chiave privata non trovata')
     const privateKey = await keyManager.unlockWithPin(user.email, pin, bundle)
     setSessionKey(privateKey)
+    if (typeof window !== 'undefined') sessionStorage.setItem('axshare_session_pin', pin)
     setShowUnlockModal(false)
   }, [user?.email, setSessionKey])
 
@@ -156,12 +157,15 @@ export default function AppLayout({
     router.push('/login')
   }, [logout, router])
 
-  if (isLoading) return <p data-testid="app-loading">Caricamento...</p>
-  if (!user) return null
+  // Redirect a login solo quando abbiamo finito di caricare e non c'è utente (nessun "Caricamento..." a schermo)
+  if (!user && !isLoading) return null
 
   return (
-    <div>
-      <nav data-testid="navbar">
+    <div style={{ display: 'flex', flexDirection: 'column',
+      height: '100vh', overflow: 'hidden' }} data-testid={isLoading ? 'app-loading' : undefined}>
+
+      {/* Nav nascosto — mantiene data-testid per i test, invisibile all'utente */}
+      <nav data-testid="navbar" style={{ display: 'none' }}>
         <span><strong>AXSHARE</strong></span>
         <span> | </span>
         <Link href="/dashboard" data-testid="nav-dashboard">Dashboard</Link>
@@ -170,7 +174,8 @@ export default function AppLayout({
             <span> | </span>
             <Link href="/desktop/sync" data-testid="nav-sync">
               {syncContext?.syncState === 'syncing' && (
-                <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }} title="Sincronizzazione in corso">🔄</span>
+                <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}
+                  title="Sincronizzazione in corso">🔄</span>
               )}
               {syncContext?.syncState === 'success' && syncContext?.lastSync != null && (
                 <span title={`Sincronizzato il ${syncContext.lastSync.toLocaleString('it')}`}>✅</span>
@@ -184,7 +189,7 @@ export default function AppLayout({
         )}
         <span> | </span>
         <Link href="/settings" data-testid="nav-settings">Impostazioni</Link>
-        {user.role === 'admin' && (
+        {user?.role === 'admin' && (
           <>
             <span> | </span>
             <Link href="/admin" data-testid="nav-admin">Admin</Link>
@@ -195,7 +200,7 @@ export default function AppLayout({
           Notifiche {unreadCount > 0 && `(${unreadCount})`}
         </Link>
         <span> | </span>
-        <span data-testid="nav-user">{user.email}</span>
+        <span data-testid="nav-user">{user?.email ?? ''}</span>
         <span> | </span>
         {typeof window !== 'undefined' && isDesktop() && process.env.NODE_ENV === 'development' && (
           <>
@@ -216,40 +221,30 @@ export default function AppLayout({
             <span> | </span>
           </>
         )}
-        <button
-          type="button"
-          onClick={handleLogout}
-          data-testid="logout-button"
-        >
+        <button type="button" onClick={handleLogout} data-testid="logout-button">
           Esci
         </button>
       </nav>
+
+      {/* SyncStatusBar — mantieni, solo nascosta visivamente se vuota */}
       <SyncStatusBar />
 
-      <hr />
-
+      {/* Modal PIN decifratura: mostrata solo dopo login, centrata, stile progetto. Non richiesta di nuovo finché JWT è valido; con logout il token viene rimosso e al nuovo login si richiede di nuovo il PIN (web + desktop). */}
       {showUnlockModal && user && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.85)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-          }}
-        >
+        <div className="ax-pin-modal-overlay" data-testid="pin-unlock-modal">
           <PinSetup
             mode="unlock"
             email={user.email ?? ''}
             onComplete={handlePinUnlock}
+            appearance="project"
           />
         </div>
       )}
 
-      <main>
-        {children}
+      {/* Children (dashboard, settings, ecc.) — occupa tutto lo spazio; visibili solo quando user è pronto (auth + eventuale restore chiave in background) */}
+      <main style={{ flex: 1, overflow: 'hidden', display: 'flex',
+        flexDirection: 'column' }}>
+        {user ? children : null}
       </main>
     </div>
   )

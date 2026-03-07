@@ -108,6 +108,44 @@ services:
     networks:
       - axshare_net
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: axshare_backend
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    environment:
+      DATABASE_URL: postgresql+asyncpg://axshare:axshare_password@postgres:5432/axshare_db
+      REDIS_URL: redis://:axshare_redis_password@redis:6379/0
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: axshare_minio
+      MINIO_SECRET_KEY: axshare_minio_secret
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: axshare-dev-token
+      SECRET_KEY: axshare_secret_key_change_in_production
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - axshare_net
+    volumes:
+      - ./backend:/app
+
   celery_worker:
     build:
       context: ./backend

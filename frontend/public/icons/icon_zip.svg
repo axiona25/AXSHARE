@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 96" width="80" height="96">
+  <path d="M12 8 L56 8 L68 20 L68 88 L12 88 Z" fill="#6D4C41" opacity="0.15" transform="translate(2,2)"/>
+  <path d="M12 8 L56 8 L68 20 L68 88 L12 88 Z" fill="#D7CCC8"/>
+  <path d="M56 8 L56 20 L68 20 Z" fill="#BCAAA4"/>
+  <path d="M56 8 L56 20 L68 20" fill="none" stroke="#6D4C41" stroke-width="0.8" opacity="0.4"/>
+  <rect x="8" y="58" width="64" height="26" rx="5" ry="5" fill="#6D4C41"/>
+  <text x="40" y="76" font-family="Arial Black,sans-serif" font-weight="900" font-size="18" fill="white" text-anchor="middle">ZIP</text>
+</svg>

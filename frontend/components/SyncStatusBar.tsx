@@ -53,7 +53,13 @@ export function SyncStatusBar() {
   }
 
   return (
-    <div data-testid="sync-status-bar">
+    <div data-testid="sync-status-bar" style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '4px 20px 4px 240px',
+      background: 'var(--ax-surface-1)',
+      borderBottom: '1px solid var(--ax-border)',
+      fontSize: 11, color: 'var(--ax-muted)', fontWeight: 500,
+    }}>
       <span data-testid="sync-status-label">{label}</span>
       {pending > 0 && (
         <span data-testid="sync-pending"> ({pending} in coda)</span>

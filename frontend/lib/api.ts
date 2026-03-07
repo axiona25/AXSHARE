@@ -439,6 +439,13 @@ export const filesApi = {
     }),
 
   destroy: (fileId: string) => apiClient.delete(`/files/${fileId}/destroy`),
+
+  /** Sposta un file in un'altra cartella (targetFolderId null = root). */
+  move: (fileId: string, targetFolderId: string | null) =>
+    apiClient.patch<{ moved: boolean; folder_id: string | null }>(
+      `/files/${fileId}`,
+      { folder_id: targetFolderId }
+    ),
 }
 
 // ─── Folders API ─────────────────────────────────────────────────────────────
@@ -448,11 +455,31 @@ export const foldersApi = {
     nameEncrypted: string,
     parentId?: string,
     folderKeyEncrypted?: string
-  ) =>
-    apiClient.post<{ folder_id: string }>('/folders/', {
+  ) => {
+    const body: { name_encrypted: string; parent_id?: string; folder_key_encrypted?: string } = {
       name_encrypted: nameEncrypted,
-      parent_id: parentId,
-      folder_key_encrypted: folderKeyEncrypted,
+    }
+    if (parentId != null && parentId !== '') body.parent_id = parentId
+    if (folderKeyEncrypted != null && folderKeyEncrypted !== '') body.folder_key_encrypted = folderKeyEncrypted
+    return apiClient.post<{ folder_id: string }>('/folders/', body)
+  },
+
+  getKey: (folderId: string) =>
+    apiClient.get<{ folder_key_encrypted: string }>(`/folders/${folderId}/key`),
+
+  destroy: (folderId: string) =>
+    apiClient.delete(`/folders/${folderId}`),
+
+  rename: (folderId: string, nameEncrypted: string, folderKeyEncrypted?: string) =>
+    apiClient.patch(`/folders/${folderId}`, {
+      name_encrypted: nameEncrypted,
+      ...(folderKeyEncrypted ? { folder_key_encrypted: folderKeyEncrypted } : {}),
+    }),
+
+  /** Sposta una cartella in un'altra parent (targetParentId null = root). */
+  move: (folderId: string, targetParentId: string | null) =>
+    apiClient.patch<{ updated: boolean }>(`/folders/${folderId}`, {
+      parent_id: targetParentId,
     }),
 
   listRoot: () => apiClient.get<Folder[]>('/folders/'),
@@ -593,6 +620,7 @@ export interface UserDashboard {
     total_size_mb: number
     largest_file_bytes: number
     average_file_bytes: number
+    storage_quota_bytes: number
   }
   sharing: {
     active_share_links: number

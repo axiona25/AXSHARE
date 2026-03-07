@@ -12,6 +12,7 @@ class StorageStats(BaseModel):
     total_size_mb: float
     largest_file_bytes: int
     average_file_bytes: float
+    storage_quota_bytes: int  # Quota assegnata all'utente (modificabile da admin)
 
 
 class SharingStats(BaseModel):

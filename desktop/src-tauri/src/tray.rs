@@ -45,7 +45,7 @@ pub fn setup_tray(app: &mut App) -> tauri::Result<()> {
                     set_activation_policy(app, true);
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
-                        let _ = window.set_focus();
+                        // Non chiamare set_focus: l'utente porta in primo piano manualmente
                     }
                 }
                 "sync" => {
@@ -93,7 +93,7 @@ pub fn setup_tray(app: &mut App) -> tauri::Result<()> {
                         #[cfg(target_os = "macos")]
                         set_activation_policy(&app, true);
                         let _ = window.show();
-                        let _ = window.set_focus();
+                        // Non chiamare set_focus: l'utente porta in primo piano manualmente
                     }
                 }
             }

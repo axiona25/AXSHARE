@@ -77,163 +77,196 @@ export default function LoginPage() {
   }
 
   return (
-    <main>
-      <h1>AXSHARE</h1>
-      <h2>Accedi al tuo account</h2>
+    <main className="ax-login-page">
+      <div className="ax-login-bg">
+        <div className="ax-login-orb ax-login-orb-1" aria-hidden />
+        <div className="ax-login-orb ax-login-orb-2" aria-hidden />
+        <div className="ax-login-orb ax-login-orb-3" aria-hidden />
+        <div className="ax-login-grid" aria-hidden />
+      </div>
 
-      {error && (
-        <p data-testid="error-message" role="alert">
-          {error}
-        </p>
-      )}
+      <div className="ax-login-card-wrap">
+        <div className="ax-login-logo-area">
+          <img
+            src="/Logo.png"
+            alt="AXSHARE"
+            style={{ height: '64px', width: 'auto', objectFit: 'contain' }}
+          />
+          <div className="ax-login-logo-tagline">
+            Condivisione sicura. End-to-end encrypted.
+          </div>
+        </div>
 
-      {step === 'credentials' && (
-        <form onSubmit={handleSubmit} data-testid="login-form">
-          <div>
-            <label htmlFor="email">Email</label>
-            <input
-              id="email"
-              data-testid="email-input"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              autoComplete="email"
-              placeholder="email@esempio.com"
-            />
+        <div className="ax-login-card">
+          {step === 'credentials' && (
+            <>
+              <div className="ax-login-form-heading">Bentornato 👋</div>
+              <div className="ax-login-form-subheading">
+                Accedi al tuo account per continuare.
+              </div>
+
+              {isDev ? (
+                <>
+                  {devError && (
+                    <p className="ax-login-error" data-testid="dev-error" role="alert">
+                      {devError}
+                    </p>
+                  )}
+                  <form onSubmit={handleDevLogin} data-testid="dev-login-form">
+                    <div className="ax-login-field">
+                      <label className="ax-login-field-label" htmlFor="dev-email">Email</label>
+                      <input
+                        id="dev-email"
+                        className="ax-login-field-input"
+                        data-testid="dev-email-input"
+                        type="email"
+                        value={devEmail}
+                        onChange={(e) => setDevEmail(e.target.value)}
+                        required
+                        placeholder="nome@azienda.com"
+                      />
+                    </div>
+                    <div className="ax-login-field">
+                      <label className="ax-login-field-label" htmlFor="dev-password">Password</label>
+                      <input
+                        id="dev-password"
+                        className="ax-login-field-input"
+                        data-testid="dev-password-input"
+                        type="password"
+                        value={devPassword}
+                        onChange={(e) => setDevPassword(e.target.value)}
+                        required
+                        placeholder="••••••••"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="ax-login-btn-primary"
+                      data-testid="dev-login-button"
+                      disabled={devLoading}
+                    >
+                      {devLoading ? 'Accesso in corso...' : 'Accedi'}
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <>
+                  {error && (
+                    <p className="ax-login-error" data-testid="error-message" role="alert">
+                      {error}
+                    </p>
+                  )}
+                  <form onSubmit={handleSubmit} data-testid="login-form">
+                    <div className="ax-login-field">
+                      <label className="ax-login-field-label" htmlFor="email">Email</label>
+                      <input
+                        id="email"
+                        className="ax-login-field-input"
+                        data-testid="email-input"
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                        autoComplete="email"
+                        placeholder="nome@azienda.com"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="ax-login-btn-primary"
+                      data-testid="login-button"
+                      disabled={isLoading}
+                    >
+                      {isLoading ? 'Accesso in corso...' : 'Accedi'}
+                    </button>
+                  </form>
+                </>
+              )}
+
+              <div className="ax-login-divider">
+                <div className="ax-login-divider-line" />
+                <span className="ax-login-divider-text">oppure continua con</span>
+                <div className="ax-login-divider-line" />
+              </div>
+
+              <section data-testid="passkey-login-section">
+                <p style={{ fontSize: 13, color: 'var(--ax-text-muted)', marginBottom: 12 }}>
+                  Usa la tua biometria o chiave di sicurezza hardware.
+                </p>
+                <button
+                  type="button"
+                  className="ax-login-btn-social"
+                  data-testid="passkey-login-button"
+                  onClick={async () => {
+                    clearError()
+                    if (!email.trim()) return
+                    const ok = await loginWithPasskey(email.trim())
+                    if (ok) {
+                      await refreshUser()
+                      router.push('/dashboard')
+                    }
+                  }}
+                  disabled={isLoading}
+                >
+                  {isLoading ? 'In corso...' : 'Accedi con passkey'}
+                </button>
+              </section>
+            </>
+          )}
+
+          {step === 'totp' && (
+            <form onSubmit={handleTotpSubmit} data-testid="totp-form">
+              <div className="ax-login-form-heading">Verifica identità</div>
+              <div className="ax-login-form-subheading">
+                Inserisci il codice dalla tua app autenticatore.
+              </div>
+              {pendingEmail && (
+                <p data-testid="totp-pending-email" style={{ fontSize: 13, color: 'var(--ax-text-muted)', marginBottom: 16 }}>
+                  {pendingEmail}
+                </p>
+              )}
+              <div className="ax-login-field">
+                <label className="ax-login-field-label" htmlFor="totp">Codice TOTP</label>
+                <input
+                  id="totp"
+                  className="ax-login-field-input"
+                  data-testid="totp-input"
+                  type="text"
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value)}
+                  required
+                  maxLength={6}
+                  pattern="[0-9]{6}"
+                  placeholder="000000"
+                  autoComplete="one-time-code"
+                />
+              </div>
+              <button type="submit" className="ax-login-btn-primary" data-testid="totp-submit" disabled={isLoading}>
+                {isLoading ? 'Verifica...' : 'Verifica'}
+              </button>
+              <button
+                type="button"
+                className="ax-login-btn-social"
+                onClick={() => setStep('credentials')}
+                data-testid="totp-back"
+              >
+                Torna indietro
+              </button>
+            </form>
+          )}
+
+          <div className="ax-login-card-footer">
+            Non hai un account?{' '}
+            <Link href="/register" data-testid="register-link">
+              Registrati
+            </Link>
           </div>
 
-          <button
-            type="submit"
-            data-testid="login-button"
-            disabled={isLoading}
-          >
-            {isLoading ? 'Accesso in corso...' : 'Accedi'}
-          </button>
-        </form>
-      )}
-
-      {step === 'totp' && (
-        <form onSubmit={handleTotpSubmit} data-testid="totp-form">
-          <p>Inserisci il codice dalla tua app autenticatore.</p>
-          {pendingEmail && (
-            <p data-testid="totp-pending-email">{pendingEmail}</p>
-          )}
-          <div>
-            <label htmlFor="totp">Codice TOTP</label>
-            <input
-              id="totp"
-              data-testid="totp-input"
-              type="text"
-              value={totpCode}
-              onChange={(e) => setTotpCode(e.target.value)}
-              required
-              maxLength={6}
-              pattern="[0-9]{6}"
-              placeholder="000000"
-              autoComplete="one-time-code"
-            />
+          <div className="ax-login-encrypt-badge">
+            🔒 Crittografia end-to-end
           </div>
-          <button type="submit" data-testid="totp-submit" disabled={isLoading}>
-            {isLoading ? 'Verifica...' : 'Verifica'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setStep('credentials')}
-            data-testid="totp-back"
-          >
-            Torna indietro
-          </button>
-        </form>
-      )}
-
-      <hr />
-
-      <section data-testid="passkey-login-section">
-        <h3>Accedi con passkey</h3>
-        <p>Usa la tua biometria o chiave di sicurezza hardware.</p>
-        <button
-          type="button"
-          data-testid="passkey-login-button"
-          onClick={async () => {
-            clearError()
-            if (!email.trim()) {
-              return
-            }
-            const ok = await loginWithPasskey(email.trim())
-            if (ok) {
-              await refreshUser()
-              router.push('/dashboard')
-            }
-          }}
-          disabled={isLoading}
-        >
-          {isLoading ? 'In corso...' : 'Accedi con passkey'}
-        </button>
-      </section>
-
-      <hr />
-      <p>
-        Non hai un account?{' '}
-        <Link href="/register" data-testid="register-link">
-          Registrati
-        </Link>
-      </p>
-
-      {isDev && (
-        <section data-testid="dev-login-section">
-          <hr />
-          <p>
-            <strong>[DEV ONLY]</strong> Login diretto email + password
-          </p>
-
-          {devError && (
-            <p data-testid="dev-error" role="alert" style={{ color: 'red' }}>
-              {devError}
-            </p>
-          )}
-
-          <form onSubmit={handleDevLogin} data-testid="dev-login-form">
-            <div>
-              <label htmlFor="dev-email">Email</label>
-              <input
-                id="dev-email"
-                data-testid="dev-email-input"
-                type="email"
-                value={devEmail}
-                onChange={(e) => setDevEmail(e.target.value)}
-                required
-                placeholder="user@test.com"
-              />
-            </div>
-            <div>
-              <label htmlFor="dev-password">Password</label>
-              <input
-                id="dev-password"
-                data-testid="dev-password-input"
-                type="password"
-                value={devPassword}
-                onChange={(e) => setDevPassword(e.target.value)}
-                required
-                placeholder="Test1234!"
-              />
-            </div>
-            <button
-              type="submit"
-              data-testid="dev-login-button"
-              disabled={devLoading}
-            >
-              {devLoading ? 'Login...' : '[DEV] Accedi con password'}
-            </button>
-          </form>
-
-          <p>
-            <small>
-              Utenti test: user@test.com / Test1234! — admin@test.com / Admin1234!
-            </small>
-          </p>
-        </section>
-      )}
+        </div>
+      </div>
     </main>
   )
 }

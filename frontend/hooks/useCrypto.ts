@@ -10,6 +10,7 @@ import { useState, useCallback } from 'react'
 import { useAuthContext } from '@/context/AuthContext'
 import {
   filesApi,
+  foldersApi,
   usersApi,
   permissionsApi,
 } from '@/lib/api'
@@ -60,6 +61,9 @@ interface UseCryptoReturn {
   ) => Promise<Blob | null>
   decryptFileNames: (
     files: { id: string; name_encrypted: string }[]
+  ) => Promise<Record<string, string>>
+  decryptFolderNames: (
+    folders: { id: string; name_encrypted: string }[]
   ) => Promise<Record<string, string>>
   /** Nomi decifrati + chiavi AES in base64 (per disco virtuale). */
   decryptFileNamesAndKeys: (
@@ -433,6 +437,41 @@ export function useCrypto(): UseCryptoReturn {
     [user, sessionPrivateKey]
   )
 
+  /**
+   * Decifra i nomi di una lista di cartelle (name_encrypted cifrato con folderKey).
+   * Usa foldersApi.getKey e la chiave privata in sessione.
+   */
+  const decryptFolderNames = useCallback(
+    async (
+      folders: { id: string; name_encrypted: string }[]
+    ): Promise<Record<string, string>> => {
+      if (!user) return {}
+      const privateKey = sessionPrivateKey
+      if (!privateKey) {
+        setError('Sessione chiave non attiva')
+        return {}
+      }
+      const results: Record<string, string> = {}
+      for (const folder of folders) {
+        try {
+          const keyResp = await foldersApi.getKey(folder.id)
+          const folderKey = await decryptFileKeyWithRSA(
+            keyResp.data.folder_key_encrypted,
+            privateKey
+          )
+          const nameBytes = base64ToBytes(folder.name_encrypted)
+          const decrypted = await decryptFileChunked(nameBytes, folderKey, user.id)
+          results[folder.id] = new TextDecoder().decode(decrypted)
+        } catch (err) {
+          console.error('[DECRYPT FOLDER NAME]', folder.id, err)
+          results[folder.id] = `Cartella ${folder.id.substring(0, 8)}…`
+        }
+      }
+      return results
+    },
+    [user, sessionPrivateKey]
+  )
+
   const decryptFileNamesAndKeys = useCallback(
     async (
       files: { id: string; name_encrypted: string }[]
@@ -481,6 +520,7 @@ export function useCrypto(): UseCryptoReturn {
     downloadAndDecrypt,
     downloadVersionAndDecrypt,
     decryptFileNames,
+    decryptFolderNames,
     decryptFileNamesAndKeys,
     shareFile,
     clearError,

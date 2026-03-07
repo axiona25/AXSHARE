@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import Boolean, DateTime, Enum, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, String, Text
 from sqlalchemy.orm import mapped_column, Mapped, relationship
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 import enum
@@ -54,6 +54,11 @@ class User(Base, UUIDMixin, TimestampMixin):
 
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_ip: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
+
+    # Quota storage in bytes (default 1 GB). Admin può modificare per utente/gruppo.
+    storage_quota_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="1073741824"
+    )
 
     # GDPR (Fase 12)
     gdpr_erasure_requested_at: Mapped[Optional[datetime]] = mapped_column(
