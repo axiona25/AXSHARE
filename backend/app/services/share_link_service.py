@@ -35,6 +35,7 @@ class ShareLinkService:
         owner_id: uuid.UUID,
         file_key_encrypted_for_link: Optional[str] = None,
         password: Optional[str] = None,
+        require_recipient_pin: bool = False,
         expires_at: Optional[datetime] = None,
         max_downloads: Optional[int] = None,
         label: Optional[str] = None,
@@ -51,6 +52,7 @@ class ShareLinkService:
             file_key_encrypted_for_link=file_key_encrypted_for_link,
             password_hash=password_hash,
             is_password_protected=is_password_protected,
+            require_recipient_pin=require_recipient_pin,
             expires_at=expires_at,
             max_downloads=max_downloads,
             label=label,
@@ -66,9 +68,10 @@ class ShareLinkService:
         token: str,
         password: Optional[str],
         request: Request,
+        increment_count: bool = True,
     ) -> tuple[ShareLink, File]:
         """
-        Valida token e password, registra accesso.
+        Valida token e password. Se increment_count=True registra accesso e incrementa download_count.
         Restituisce (link, file) se valido, altrimenti raise HTTPException.
         """
         result = await db.execute(
@@ -130,16 +133,17 @@ class ShareLinkService:
                 status_code=404, detail="File non disponibile"
             )
 
-        link.download_count += 1
-        access = ShareLinkAccess(
-            link_id=link.id,
-            ip_address=request.client.host if request.client else None,
-            user_agent=(request.headers.get("user-agent") or "")[:256],
-            outcome="success",
-        )
-        db.add(access)
-        await db.commit()
-        await db.refresh(link)
+        if increment_count:
+            link.download_count += 1
+            access = ShareLinkAccess(
+                link_id=link.id,
+                ip_address=request.client.host if request.client else None,
+                user_agent=(request.headers.get("user-agent") or "")[:256],
+                outcome="success",
+            )
+            db.add(access)
+            await db.commit()
+            await db.refresh(link)
         await AuditService.log_event(
             db,
             action=AuditAction.SHARE_LINK_ACCESS,

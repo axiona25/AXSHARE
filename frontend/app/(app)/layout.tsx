@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useCallback, useState } from 'react'
+import { useEffect, useCallback, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuthContext } from '@/context/AuthContext'
@@ -8,7 +8,7 @@ import { useSyncContext } from '@/context/SyncContext'
 import { useNotifications } from '@/hooks/useNotifications'
 import { SyncStatusBar } from '@/components/SyncStatusBar'
 import PinSetup from '@/components/PinSetup'
-import { usersApi } from '@/lib/api'
+import { usersApi, notificationsApi } from '@/lib/api'
 import { keyManager } from '@/lib/keyManager'
 import { isDesktop, isRunningInTauri } from '@/lib/tauri'
 
@@ -106,6 +106,64 @@ export default function AppLayout({
     })
   }, [hasSessionKey, syncContext?.syncState])
 
+  const prevUnreadCountRef = useRef(0)
+  const lastNotifRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!user) return
+    const checkNotifications = async () => {
+      try {
+        const { data: countData } = await notificationsApi.getCount()
+        const newCount = countData.unread_count
+        if (newCount > prevUnreadCountRef.current) {
+          const { data } = await notificationsApi.list({
+            unread_only: true,
+            page_size: 1,
+          })
+          const latest = data.items?.[0]
+          if (latest && latest.id !== lastNotifRef.current) {
+            lastNotifRef.current = latest.id
+            if (isRunningInTauri()) {
+              const { invoke } = await import('@tauri-apps/api/core')
+              switch (latest.type) {
+                case 'file_shared':
+                case 'share_link_created':
+                  await invoke('notify_file_shared', {
+                    sender: 'AXSHARE',
+                    filename: latest.body ?? 'un file',
+                  })
+                  break
+                case 'link_accessed':
+                  await invoke('show_notification', {
+                    payload: {
+                      title: '👁 File visualizzato',
+                      body: latest.body ?? 'Il tuo link è stato aperto',
+                      icon: null,
+                    },
+                  })
+                  break
+                default:
+                  await invoke('show_notification', {
+                    payload: {
+                      title: latest.title,
+                      body: latest.body ?? '',
+                      icon: null,
+                    },
+                  })
+              }
+            }
+          }
+        }
+        prevUnreadCountRef.current = newCount
+      } catch {
+        // ignora errori di rete
+      }
+    }
+    checkNotifications()
+    const interval = setInterval(checkNotifications, 15000)
+    return () => clearInterval(interval)
+  }, [user])
+
   // Eventi dal tray (desktop): sync, blocca sessione, esci
   useEffect(() => {
     if (!isDesktop()) return
@@ -151,6 +209,31 @@ export default function AppLayout({
       unlistenQuit?.()
     }
   }, [clearSessionKey, logout])
+
+  // Blocca navigazione con swipe sinistra/destra su browser web
+  useEffect(() => {
+    if (isRunningInTauri()) return
+    const preventSwipe = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        const touch = e.touches[0]
+        if (touch.clientX < 30 || touch.clientX > window.innerWidth - 30) {
+          e.preventDefault()
+        }
+      }
+    }
+    document.addEventListener('touchstart', preventSwipe, { passive: false })
+    const onPopState = () => {
+      if (!window.location.pathname.startsWith('/login')) {
+        window.history.pushState(null, '', window.location.pathname)
+      }
+    }
+    window.addEventListener('popstate', onPopState)
+    window.history.pushState(null, '', window.location.pathname)
+    return () => {
+      document.removeEventListener('touchstart', preventSwipe)
+      window.removeEventListener('popstate', onPopState)
+    }
+  }, [])
 
   const handleLogout = useCallback(async () => {
     await logout()
@@ -242,8 +325,14 @@ export default function AppLayout({
       )}
 
       {/* Children (dashboard, settings, ecc.) — occupa tutto lo spazio; visibili solo quando user è pronto (auth + eventuale restore chiave in background) */}
-      <main style={{ flex: 1, overflow: 'hidden', display: 'flex',
-        flexDirection: 'column' }}>
+      <main style={{
+        flex: 1,
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        overscrollBehaviorX: 'none',
+        touchAction: 'pan-y',
+      }}>
         {user ? children : null}
       </main>
     </div>

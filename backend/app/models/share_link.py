@@ -41,6 +41,9 @@ class ShareLink(Base, UUIDMixin, TimestampMixin):
     is_password_protected: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
+    require_recipient_pin: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

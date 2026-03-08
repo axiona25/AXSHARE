@@ -13,10 +13,14 @@ import { useFileEvents } from '@/hooks/useFileEvents'
 import { useSubmitLock, useUploadQueue } from '@/hooks/useRateLimit'
 import { useMyDashboard } from '@/hooks/useReports'
 import { useThumbnail } from '@/hooks/useThumbnail'
-import { searchApi, foldersApi, filesApi } from '@/lib/api'
-import { getFileIcon, getFileLabel, getAxsFileIcon, getFolderIcon, getFolderIconByIndex, getFolderColorIcon, FOLDER_ICON_OPTIONS } from '@/lib/fileIcons'
+import { searchApi, foldersApi, filesApi, shareLinksApi, trashApi, activityApi, permissionsApi, type ShareLinkData } from '@/lib/api'
+import { getFileIcon, getFileLabel, getAxsFileIcon, getAxshareFileIcon, getFolderIcon, getFolderIconByIndex, getFolderColorIcon, FOLDER_ICON_OPTIONS } from '@/lib/fileIcons'
+import { AppHeader } from '@/components/AppHeader'
+import { AppSidebar } from '@/components/AppSidebar'
 import { OnboardingBanner } from '@/components/OnboardingBanner'
 import ConfirmModal from '@/components/ConfirmModal'
+import { CreateLinkModal } from '@/components/CreateLinkModal'
+import { ShareBadge, getShareBadgeType } from '@/components/ShareBadge'
 import { VersionHistory } from '@/components/VersionHistory'
 import { isRunningInTauri } from '@/lib/tauri'
 import { getAccessTokenSecure } from '@/lib/auth'
@@ -24,7 +28,7 @@ import { generateKey, encryptFileChunked, bytesToBase64, encryptFileKeyWithRSA, 
 import { keyManager } from '@/lib/keyManager'
 import { thumbnailApi } from '@/lib/api'
 import { generateThumbnail } from '@/lib/thumbnail'
-import type { FileItem, Folder, RootFileItem } from '@/types'
+import type { ActivityLog, FileItem, Folder, RootFileItem } from '@/types'
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B'
@@ -67,6 +71,67 @@ function formatDateTimeIt(date: Date | string | null | undefined): string {
     minute: '2-digit',
     second: '2-digit',
   })
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  upload: 'Caricato',
+  download: 'Scaricato',
+  rename: 'Rinominato',
+  move: 'Spostato',
+  delete: 'Eliminato',
+  share: 'Condiviso',
+  share_link: 'Collegamento creato',
+  share_revoke: 'Collegamento rimosso',
+  create_folder: 'Creato',
+  trash: 'Spostato nel cestino',
+  restore: 'Ripristinato',
+  destroy: 'Eliminato definitivamente',
+}
+
+function formatActivityDate(createdAt: string): string {
+  const d = new Date(createdAt)
+  if (Number.isNaN(d.getTime())) return ''
+  const now = new Date()
+  const diffMs = now.getTime() - d.getTime()
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+  if (diffDays === 0) {
+    const time = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+    return `oggi ${time}`
+  }
+  if (diffDays === 1) return 'ieri'
+  return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })
+}
+
+function formatActivityDisplay(log: ActivityLog): string {
+  const label = ACTION_LABELS[log.action] ?? log.action
+  const dateStr = formatActivityDate(log.created_at)
+  return dateStr ? `${label} · ${dateStr}` : label
+}
+
+function getActivityLabel(log: ActivityLog): string {
+  return ACTION_LABELS[log.action] ?? log.action
+}
+
+function getInitialsFromEmail(email: string): string {
+  if (!email?.trim()) return '?'
+  const part = email.split('@')[0]?.trim() || ''
+  const segments = part.split(/[._-]/).filter(Boolean)
+  if (segments.length >= 2) return (segments[0][0]! + segments[1][0]!).toUpperCase()
+  return (part.slice(0, 2) || '?').toUpperCase()
+}
+
+/** Iniziali da nome e cognome. Gestisce "Mario Rossi" → MR, "r.amoroso80" → RA. */
+function getInitialsFromDisplayName(name: string | null | undefined): string {
+  const t = name?.trim()
+  if (!t) return '?'
+  const bySpace = t.split(/\s+/).filter(Boolean)
+  if (bySpace.length >= 2) return (bySpace[0]![0]! + bySpace[1]![0]!).toUpperCase()
+  if (t.includes('.')) {
+    const byDot = t.split('.').filter(Boolean)
+    if (byDot.length >= 2) return (byDot[0]![0]! + byDot[1]![0]!).toUpperCase()
+  }
+  const two = (t.slice(0, 2) || '?').replace(/[^A-Za-z]/g, '')
+  return (two || t[0] || '?').toUpperCase()
 }
 
 /** Preview prima pagina per le card file "In Evidenza": thumbnail salvata oppure anteprima generata al volo. Se non disponibile mostra icona tipo file. */
@@ -159,10 +224,15 @@ export default function DashboardPage() {
   const { folders, isLoading: foldersLoading, error: foldersError, revalidate: reloadFolders } = useFolders(currentFolderId)
   const { deleteFile, deleteFolder, createFolder, renameFolder, renameFile, moveFile, moveFolder } = useFileMutations()
   const { user, hasSessionKey, sessionPrivateKey, logout } = useAuthContext()
-  const { uploadFile, uploadNewVersion, downloadAndDecrypt, decryptFileNames, decryptFolderNames, decryptFileNamesAndKeys, encryptFileNameForRename, isLoading: cryptoLoading, error: cryptoError, clearError: clearCryptoError } = useCrypto()
+  const { uploadFile, uploadNewVersion, downloadAndDecrypt, decryptFileNames, decryptFolderNames, decryptFileNamesAndKeys, encryptFileNameForRename, getFileKeyBase64ForShare, isLoading: cryptoLoading, error: cryptoError, clearError: clearCryptoError } = useCrypto()
   const { lock: lockUpload, isLocked: uploadLocked } = useSubmitLock(1500)
   const { startUpload, activeUploads, canUpload } = useUploadQueue()
   const { dashboard: storageDashboard, refresh: refreshStorageDashboard } = useMyDashboard()
+
+  const oggi = new Date()
+  const giorni = ['Domenica', 'Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato']
+  const mesi = ['Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno', 'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre']
+  const dataFormattata = `${giorni[oggi.getDay()]} - ${oggi.getDate()} ${mesi[oggi.getMonth()]} ${oggi.getFullYear()}`
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const multiFileInputRef = useRef<HTMLInputElement>(null)
@@ -202,6 +272,11 @@ export default function DashboardPage() {
   const [autoSaveMessage, setAutoSaveMessage] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [lastActivityByTargetId, setLastActivityByTargetId] = useState<Record<string, ActivityLog | null>>({})
+  const [linksByFileId, setLinksByFileId] = useState<Record<string, ShareLinkData[]>>({})
+  const [teamShareByTargetId, setTeamShareByTargetId] = useState<Record<string, boolean>>({})
+  const [sharedUsersByTargetId, setSharedUsersByTargetId] = useState<Record<string, { id: string; email: string; display_name?: string }[]>>({})
+  const [linkDetailModal, setLinkDetailModal] = useState<{ fileId: string; fileName: string; link: ShareLinkData } | null>(null)
   const [contextMenu, setContextMenu] = useState<{
     x: number
     y: number
@@ -209,6 +284,9 @@ export default function DashboardPage() {
     id: string
     name: string
   } | null>(null)
+  const [favorites, setFavorites] = useState<Set<string>>(
+    () => new Set((typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('axshare_favorites') ?? '[]') : []) as string[])
+  )
   const contextMenuRef = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (!contextMenu || !contextMenuRef.current) return
@@ -224,8 +302,14 @@ export default function DashboardPage() {
     el.style.left = `${left}px`
   }, [contextMenu])
   const [toast, setToast] = useState<string | null>(null)
-  const [headerAvatarOpen, setHeaderAvatarOpen] = useState(false)
-  const headerAvatarRef = useRef<HTMLDivElement>(null)
+  const [shareToast, setShareToast] = useState<{
+    title: string
+    body: string
+    visible: boolean
+    hiding: boolean
+  } | null>(null)
+  const [hasShareNotif, setHasShareNotif] = useState(false)
+  const shareToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [confirmModal, setConfirmModal] = useState<{
     title: string
     message: string
@@ -234,43 +318,77 @@ export default function DashboardPage() {
     onConfirm: () => void
   } | null>(null)
   const [shareModal, setShareModal] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null)
-  const [shareModalEmail, setShareModalEmail] = useState('')
-  const [shareModalLevel, setShareModalLevel] = useState<'read' | 'write' | 'read_no_download'>('read')
-  const [shareModalPermissionOpen, setShareModalPermissionOpen] = useState(false)
-  const shareModalPermissionRef = useRef<HTMLDivElement>(null)
+  const [sharePermission, setSharePermission] = useState<'read' | 'write'>('read')
+  const [shareBlockForward, setShareBlockForward] = useState(false)
+  const [shareBlockDelete, setShareBlockDelete] = useState(false)
+  const [shareBlockDownload, setShareBlockDownload] = useState(false)
+  const [shareExpiry, setShareExpiry] = useState<'never' | 'custom'>('never')
+  const [shareExpiryDate, setShareExpiryDate] = useState('')
+  const [shareExpiryTime, setShareExpiryTime] = useState('23:59')
+  const [sharePinRequired, setSharePinRequired] = useState(false)
+  const [shareUserSearchQuery, setShareUserSearchQuery] = useState('')
+  const [shareRecipientUsers, setShareRecipientUsers] = useState<Array<{ id: string; email: string; display_name?: string }>>([])
+  const [shareSearchDropdownOpen, setShareSearchDropdownOpen] = useState(false)
+  const shareSearchRef = useRef<HTMLDivElement>(null)
   const [renameModal, setRenameModal] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null)
   const [renameModalValue, setRenameModalValue] = useState('')
   const [moveModal, setMoveModal] = useState<{ items: { type: 'file' | 'folder'; id: string; name: string }[] } | null>(null)
   const [moveModalMoving, setMoveModalMoving] = useState(false)
-  const [uploadConfirmPending, setUploadConfirmPending] = useState<{ files: File[]; folderName?: string } | null>(null)
-  const IN_EVIDENZA_KEY = 'ax-in-evidenza'
+  const [linkModal, setLinkModal] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null)
+  type UploadConfirmPending = { folders: { folderName: string; files: File[] }[] }
+  const [uploadConfirmPending, setUploadConfirmPending] = useState<UploadConfirmPending | null>(null)
   const IN_EVIDENZA_MAX = 5
+  const inEvidenzaKey = user?.id ? `ax-in-evidenza-${user.id}` : null
   type InEvidenzaItem = { type: 'folder' | 'file'; id: string; name: string; folderIconIndex?: number; size_bytes?: number; created_at?: string }
-  const [inEvidenza, setInEvidenza] = useState<InEvidenzaItem[]>(() => {
-    if (typeof window === 'undefined') return []
+  const [inEvidenza, setInEvidenza] = useState<InEvidenzaItem[]>([])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !inEvidenzaKey) {
+      setInEvidenza([])
+      return
+    }
     try {
-      const raw = window.localStorage.getItem(IN_EVIDENZA_KEY)
-      if (!raw) return []
+      const raw = window.localStorage.getItem(inEvidenzaKey)
+      if (!raw) {
+        setInEvidenza([])
+        return
+      }
       const parsed = JSON.parse(raw) as InEvidenzaItem[]
-      return Array.isArray(parsed) ? parsed.slice(0, IN_EVIDENZA_MAX) : []
-    } catch { return [] }
-  })
+      setInEvidenza(Array.isArray(parsed) ? parsed.slice(0, IN_EVIDENZA_MAX) : [])
+    } catch {
+      setInEvidenza([])
+    }
+  }, [inEvidenzaKey])
+
   const addToInEvidenza = useCallback((item: InEvidenzaItem) => {
+    if (!inEvidenzaKey) return
     setInEvidenza((prev) => {
       if (prev.some((x) => x.id === item.id && x.type === item.type)) return prev
       if (prev.length >= IN_EVIDENZA_MAX) return prev
       const next = [...prev, item]
-      try { window.localStorage.setItem(IN_EVIDENZA_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+      try { window.localStorage.setItem(inEvidenzaKey, JSON.stringify(next)) } catch { /* ignore */ }
+      return next
+    })
+  }, [inEvidenzaKey])
+  const toggleFavorite = useCallback((id: string) => {
+    setFavorites((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('axshare_favorites', JSON.stringify([...next]))
+      }
       return next
     })
   }, [])
   const removeFromInEvidenza = useCallback((id: string, type: 'folder' | 'file') => {
+    if (!inEvidenzaKey) return
     setInEvidenza((prev) => {
       const next = prev.filter((x) => !(x.id === id && x.type === type))
-      try { window.localStorage.setItem(IN_EVIDENZA_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+      try { window.localStorage.setItem(inEvidenzaKey, JSON.stringify(next)) } catch { /* ignore */ }
       return next
     })
-  }, [])
+  }, [inEvidenzaKey])
   const FOLDER_ICON_PREF_KEY = 'ax-folder-icon-pref'
   const [folderIconPref, setFolderIconPref] = useState<Record<string, number>>(() => {
     if (typeof window === 'undefined') return {}
@@ -302,6 +420,31 @@ export default function DashboardPage() {
     () => inEvidenza.filter((i) => i.type === 'file' && i.size_bytes == null).map((i) => i.id),
     [inEvidenza]
   )
+  /** Tutte le cartelle in evidenza: carichiamo sempre stats (size + file_count) dall’endpoint dedicato così il numero file è sempre visibile. */
+  const inEvidenzaFolderIdsForStats = useMemo(
+    () => inEvidenza.filter((i) => i.type === 'folder').map((i) => i.id),
+    [inEvidenza]
+  )
+  const { data: inEvidenzaFolderStatsMap } = useSWR<
+    Record<string, { total_size_bytes: number; file_count: number }>
+  >(
+    inEvidenzaFolderIdsForStats.length > 0
+      ? ['in-evidenza-folder-stats', inEvidenzaFolderIdsForStats.join(',')]
+      : null,
+    async () => {
+      const map: Record<string, { total_size_bytes: number; file_count: number }> = {}
+      for (const id of inEvidenzaFolderIdsForStats) {
+        try {
+          const r = await foldersApi.getStats(id)
+          if (r.data) map[id] = r.data
+        } catch {
+          /* non inserire: si userà folderData dalla lista se disponibile */
+        }
+      }
+      return map
+    }
+  )
+
   const { data: inEvidenzaFileMetaMap } = useSWR(
     inEvidenzaFileIdsToFetch.length > 0 ? ['in-evidenza-file-meta', inEvidenzaFileIdsToFetch.join(',')] : null,
     async () => {
@@ -449,35 +592,8 @@ export default function DashboardPage() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  /** Raccoglie ricorsivamente tutti i File da una directory (File System Access API). */
-  async function getFilesFromDirectoryHandle(handle: FileSystemDirectoryHandle): Promise<{ files: File[]; folderName: string }> {
-    const folderName = handle.name
-    const files: File[] = []
-    async function walk(dir: FileSystemDirectoryHandle): Promise<void> {
-      for await (const [, entry] of dir.entries()) {
-        if (entry.kind === 'file') {
-          files.push(await (entry as FileSystemFileHandle).getFile())
-        } else {
-          await walk(entry as FileSystemDirectoryHandle)
-        }
-      }
-    }
-    await walk(handle)
-    return { files, folderName }
-  }
-
-  /** Apre il picker cartella: se disponibile usa File System Access API (solo la nostra modale), altrimenti input (dialog browser + nostra modale). */
-  async function handlePickFolderClick() {
-    if (typeof window !== 'undefined' && 'showDirectoryPicker' in window && window.isSecureContext) {
-      try {
-        const handle = await (window as Window & { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker()
-        const { files, folderName } = await getFilesFromDirectoryHandle(handle)
-        if (files.length) setUploadConfirmPending({ files, folderName })
-      } catch (err) {
-        if ((err as Error)?.name !== 'AbortError') showToast('Impossibile aprire la cartella')
-      }
-      return
-    }
+  /** Apre il picker cartella tramite input webkitdirectory (evita la modale di permesso Chrome della File System Access API). */
+  function handlePickFolderClick() {
     folderInputRef.current?.click()
   }
 
@@ -487,7 +603,7 @@ export default function DashboardPage() {
       try {
         const handles = await (window as Window & { showOpenFilePicker: (o: { multiple: boolean }) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker({ multiple: true })
         const files = await Promise.all(handles.map((h) => h.getFile()))
-        if (files.length) setUploadConfirmPending({ files })
+        if (files.length) setUploadConfirmPending({ folders: [{ folderName: '', files }] })
       } catch (err) {
         if ((err as Error)?.name !== 'AbortError') showToast('Impossibile aprire i file')
       }
@@ -500,7 +616,7 @@ export default function DashboardPage() {
     const fileList = e.target.files
     if (!fileList?.length) return
     const files = Array.from(fileList)
-    setUploadConfirmPending({ files })
+    setUploadConfirmPending({ folders: [{ folderName: '', files }] })
     e.target.value = ''
   }
 
@@ -508,44 +624,55 @@ export default function DashboardPage() {
     const fileList = e.target.files
     if (!fileList?.length) return
     const files = Array.from(fileList)
-    const folderName = files[0]?.webkitRelativePath?.split('/')[0] ?? undefined
-    setUploadConfirmPending({ files, folderName })
+    // Raggruppa per prima cartella nel path (se il browser restituisce più cartelle)
+    const byRoot = new Map<string, File[]>()
+    for (const f of files) {
+      const root = (f.webkitRelativePath || '').split('/')[0] || ''
+      if (!byRoot.has(root)) byRoot.set(root, [])
+      byRoot.get(root)!.push(f)
+    }
+    const entries = Array.from(byRoot.entries()).map(([folderName, list]) => ({ folderName, files: list }))
+    setUploadConfirmPending({ folders: entries })
     e.target.value = ''
   }
 
   async function doPendingUpload() {
-    if (!uploadConfirmPending?.files.length) return
-    const { files, folderName } = uploadConfirmPending
+    const pending = uploadConfirmPending
+    if (!pending?.folders?.length) return
     setUploadConfirmPending(null)
+    const totalFiles = pending.folders.reduce((s, f) => s + f.files.length, 0)
+    const folderCount = pending.folders.filter((f) => f.folderName).length
     await lockUpload(async () =>
       startUpload(async () => {
-        setUploadStatus(folderName ? `Caricamento cartella (${files.length} file)...` : `Upload in corso (${files.length} file)...`)
+        setUploadStatus(folderCount > 0 ? `Caricamento ${folderCount} cartella/e (${totalFiles} file)...` : `Upload in corso (${totalFiles} file)...`)
         try {
           let targetFolderId: string | undefined = currentFolderId
-          if (folderName && user?.id) {
-            const folderKey = await generateKey()
-            const nameBytes = new TextEncoder().encode(folderName)
-            const nameEncryptedBytes = await encryptFileChunked(nameBytes, folderKey, user.id)
-            const nameEncrypted = bytesToBase64(new Uint8Array(nameEncryptedBytes))
-            const publicKeyPem = await keyManager.getPublicKeyPem(user.id)
-            if (!publicKeyPem) throw new Error('Chiave pubblica non trovata')
-            const folderKeyEncrypted = await encryptFileKeyWithRSA(folderKey, publicKeyPem)
-            const newFolderId = await createFolder(nameEncrypted, currentFolderId, folderKeyEncrypted)
-            if (newFolderId) {
-              setFolderIcon(newFolderId, 1)
-              targetFolderId = newFolderId
+          for (const { folderName, files } of pending.folders) {
+            if (folderName && user?.id) {
+              const folderKey = await generateKey()
+              const nameBytes = new TextEncoder().encode(folderName)
+              const nameEncryptedBytes = await encryptFileChunked(nameBytes, folderKey, user.id)
+              const nameEncrypted = bytesToBase64(new Uint8Array(nameEncryptedBytes))
+              const publicKeyPem = await keyManager.getPublicKeyPem(user.id)
+              if (!publicKeyPem) throw new Error('Chiave pubblica non trovata')
+              const folderKeyEncrypted = await encryptFileKeyWithRSA(folderKey, publicKeyPem)
+              const newFolderId = await createFolder(nameEncrypted, targetFolderId, folderKeyEncrypted)
+              if (newFolderId) {
+                setFolderIcon(newFolderId, 1)
+                targetFolderId = newFolderId
+              }
+            }
+            for (const file of files) {
+              const result = await uploadFile({ file, folderId: targetFolderId })
+              if (result?.fileId) await uploadThumbnailIfSupported(result.fileId, file)
             }
           }
-          for (const file of files) {
-            const result = await uploadFile({ file, folderId: targetFolderId })
-            if (result?.fileId) await uploadThumbnailIfSupported(result.fileId, file)
-          }
-          setUploadStatus(folderName ? 'Cartella caricata.' : 'Caricamento completato.')
+          setUploadStatus(folderCount > 0 ? 'Cartelle caricate.' : 'Caricamento completato.')
           reloadFiles()
           reloadFolders()
           refreshStorageDashboard()
         } catch {
-          setUploadStatus(folderName ? 'Errore durante upload cartella.' : 'Errore durante upload.')
+          setUploadStatus(folderCount > 0 ? 'Errore durante upload cartelle.' : 'Errore durante upload.')
         }
       }),
     )
@@ -627,6 +754,135 @@ export default function DashboardPage() {
       setDecryptedFolderNames((prev) => ({ ...prev, ...names }))
     })
   }, [hasSessionKey, folders, decryptedFolderNames, decryptFolderNames])
+
+  useEffect(() => {
+    if (!hasSessionKey || files === undefined || folders === undefined) return
+    const fileIds = (files ?? []).map((f) => f.id)
+    const folderIds = (folders ?? []).map((f) => f.id)
+    if (fileIds.length === 0 && folderIds.length === 0) return
+
+    let cancelled = false
+    const load = async () => {
+      const next: Record<string, ActivityLog | null> = {}
+      await Promise.all([
+        ...fileIds.map(async (id) => {
+          if (cancelled) return
+          try {
+            const res = await activityApi.getFileActivity(id)
+            const list = res.data ?? []
+            const first = list[0] ?? null
+            if (!cancelled) next[id] = first
+          } catch {
+            if (!cancelled) next[id] = null
+          }
+        }),
+        ...folderIds.map(async (id) => {
+          if (cancelled) return
+          try {
+            const res = await activityApi.getFolderActivity(id)
+            const list = res.data ?? []
+            const first = list[0] ?? null
+            if (!cancelled) next[id] = first
+          } catch {
+            if (!cancelled) next[id] = null
+          }
+        }),
+      ])
+      if (!cancelled) setLastActivityByTargetId((prev) => ({ ...prev, ...next }))
+    }
+    load()
+    return () => { cancelled = true }
+  }, [hasSessionKey, files, folders])
+
+  useEffect(() => {
+    const fileIds = (files ?? []).map((f) => f.id)
+    if (fileIds.length === 0) return
+    let cancelled = false
+    const load = async () => {
+      const next: Record<string, ShareLinkData[]> = {}
+      await Promise.all(
+        fileIds.map(async (id) => {
+          if (cancelled) return
+          try {
+            const res = await shareLinksApi.list(id)
+            const list = (res.data ?? []) as ShareLinkData[]
+            if (!cancelled) next[id] = list
+          } catch {
+            if (!cancelled) next[id] = []
+          }
+        })
+      )
+      if (!cancelled) setLinksByFileId((prev) => ({ ...prev, ...next }))
+    }
+    load()
+    return () => { cancelled = true }
+  }, [files])
+
+  useEffect(() => {
+    const fileIds = (files ?? []).map((f) => f.id)
+    const folderIds = (folders ?? []).map((f) => f.id)
+    if (fileIds.length === 0 && folderIds.length === 0) return
+    let cancelled = false
+    const load = async () => {
+      const next: Record<string, boolean> = {}
+      const usersNext: Record<string, { id: string; email: string; display_name?: string }[]> = {}
+      await Promise.all([
+        ...fileIds.map(async (id) => {
+          if (cancelled) return
+          try {
+            const res = await permissionsApi.listForFile(id)
+            const list = res.data ?? []
+            if (!cancelled) {
+              next[id] = list.length > 0
+              usersNext[id] = list.filter((p) => p.subject_user_id).map((p) => ({ id: String(p.subject_user_id), email: p.subject_user_email ?? '', display_name: p.subject_user_display_name ?? undefined }))
+            }
+          } catch {
+            if (!cancelled) next[id] = false
+          }
+        }),
+        ...folderIds.map(async (id) => {
+          if (cancelled) return
+          try {
+            const res = await permissionsApi.listForFolder(id)
+            const list = res.data ?? []
+            if (!cancelled) {
+              next[id] = list.length > 0
+              usersNext[id] = list.filter((p) => p.subject_user_id).map((p) => ({ id: String(p.subject_user_id), email: p.subject_user_email ?? '', display_name: p.subject_user_display_name ?? undefined }))
+            }
+          } catch {
+            if (!cancelled) next[id] = false
+          }
+        }),
+      ])
+      if (!cancelled) {
+        setTeamShareByTargetId((prev) => ({ ...prev, ...next }))
+        setSharedUsersByTargetId((prev) => ({ ...prev, ...usersNext }))
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [files, folders])
+
+  const fetchLinksForFile = useCallback(async (fileId: string) => {
+    try {
+      const res = await shareLinksApi.list(fileId)
+      const list = (res.data ?? []) as ShareLinkData[]
+      setLinksByFileId((prev) => ({ ...prev, [fileId]: list }))
+    } catch {
+      setLinksByFileId((prev) => ({ ...prev, [fileId]: [] }))
+    }
+  }, [])
+
+  const refetchActivityForFile = useCallback(async (fileId: string) => {
+    try {
+      const res = await activityApi.getFileActivity(fileId, { cacheBust: true })
+      const list = res.data ?? []
+      const first = list[0] ?? null
+      setLastActivityByTargetId((prev) => ({ ...prev, [fileId]: first }))
+    } catch {
+      // ignore
+    }
+  }, [])
 
   // Pre-popola il disco e monta solo quando la lista file cambia (aggiunta/eliminazione), non ad ogni re-render/SSE
   useEffect(() => {
@@ -786,22 +1042,89 @@ export default function DashboardPage() {
   }, [currentFolderId])
 
   useEffect(() => {
-    if (!headerAvatarOpen) return
-    const onOutside = (e: MouseEvent) => {
-      if (headerAvatarRef.current && !headerAvatarRef.current.contains(e.target as Node)) setHeaderAvatarOpen(false)
+    return () => {
+      if (shareToastTimerRef.current) clearTimeout(shareToastTimerRef.current)
     }
-    document.addEventListener('click', onOutside)
-    return () => document.removeEventListener('click', onOutside)
-  }, [headerAvatarOpen])
+  }, [])
 
   useEffect(() => {
-    if (!shareModalPermissionOpen) return
-    const onOutside = (e: MouseEvent) => {
-      if (shareModalPermissionRef.current && !shareModalPermissionRef.current.contains(e.target as Node)) setShareModalPermissionOpen(false)
+    if (!shareModal) return
+    const onDocClick = (e: MouseEvent) => {
+      if (shareSearchRef.current && !shareSearchRef.current.contains(e.target as Node)) setShareSearchDropdownOpen(false)
     }
-    document.addEventListener('click', onOutside)
-    return () => document.removeEventListener('click', onOutside)
-  }, [shareModalPermissionOpen])
+    document.addEventListener('click', onDocClick)
+    return () => document.removeEventListener('click', onDocClick)
+  }, [shareModal])
+
+  const resetShareModalState = useCallback(() => {
+    setSharePermission('read')
+    setShareBlockForward(false)
+    setShareBlockDelete(false)
+    setShareBlockDownload(false)
+    setShareExpiry('never')
+    setShareExpiryDate('')
+    setShareExpiryTime('23:59')
+    setSharePinRequired(false)
+    setShareUserSearchQuery('')
+    setShareRecipientUsers([])
+    setShareSearchDropdownOpen(false)
+  }, [])
+
+  const addRecipientUser = useCallback((user: { id: string; email: string; display_name?: string }) => {
+    setShareRecipientUsers((prev) => {
+      if (prev.some((u) => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase())) return prev
+      return [...prev, user]
+    })
+    setShareUserSearchQuery('')
+    setShareSearchDropdownOpen(false)
+  }, [])
+
+  const removeRecipientUser = useCallback((id: string) => {
+    setShareRecipientUsers((prev) => prev.filter((u) => u.id !== id))
+  }, [])
+
+  const showShareToast = useCallback((title: string, body: string) => {
+    if (shareToastTimerRef.current) {
+      clearTimeout(shareToastTimerRef.current)
+    }
+    setShareToast({ title, body, visible: true, hiding: false })
+    setHasShareNotif(true)
+    shareToastTimerRef.current = setTimeout(() => {
+      setShareToast((prev) => (prev ? { ...prev, hiding: true, visible: false } : null))
+      setTimeout(() => setShareToast(null), 400)
+    }, 4000)
+  }, [])
+
+  const handleShare = useCallback(async () => {
+    if (!shareModal) return
+    let expiresAt: string | undefined
+    if (shareExpiry === 'custom' && shareExpiryDate) {
+      expiresAt = new Date(`${shareExpiryDate}T${shareExpiryTime}`).toISOString()
+    }
+    const recipientLabel = shareRecipientUsers.map((u) => u.display_name || u.email).join(', ') || undefined
+    try {
+      let fileKeyBase64: string | null = null
+      if (shareModal.type === 'file') {
+        fileKeyBase64 = await getFileKeyBase64ForShare(shareModal.id)
+      }
+      const result = await shareLinksApi.create(shareModal.id, {
+        expires_at: expiresAt,
+        require_recipient_pin: sharePinRequired || undefined,
+        label: recipientLabel,
+        ...(fileKeyBase64 != null && { file_key_encrypted_for_link: fileKeyBase64 }),
+      })
+      const link = `${typeof window !== 'undefined' ? window.location.origin : ''}/share/${result.data.token}`
+      await navigator.clipboard.writeText(link)
+      showShareToast(
+        '🔗 Link di condivisione creato',
+        `"${shareModal?.name}" · Link copiato negli appunti`
+      )
+    } catch {
+      showToast('Errore durante la condivisione')
+    }
+    resetShareModalState()
+    setShareModal(null)
+  }, [shareModal, shareExpiry, shareExpiryDate, shareExpiryTime, sharePinRequired, shareRecipientUsers, resetShareModalState, showShareToast, getFileKeyBase64ForShare])
 
   const isLoading = filesLoading || foldersLoading
   const isListReady =
@@ -1121,29 +1444,34 @@ export default function DashboardPage() {
     }
   }
 
-  async function doDeleteFile(fileId: string) {
-    await deleteFile(fileId, currentFolderId)
-    removeFromInEvidenza(fileId, 'file')
-    reloadFiles()
-    refreshStorageDashboard()
+  const doTrashFile = async (fileId: string) => {
+    try {
+      await trashApi.trashFile(fileId)
+      removeFromInEvidenza(fileId, 'file')
+      reloadFiles()
+      refreshStorageDashboard()
+      showToast('File spostato nel cestino')
+    } catch {
+      showToast('Errore durante lo spostamento nel cestino')
+    }
   }
 
   function handleDelete(fileId: string) {
     setConfirmModal({
-      title: 'Elimina file',
-      message: "Eliminare il file? L'operazione è irreversibile.",
-      confirmLabel: 'Elimina',
+      title: 'Sposta nel cestino',
+      message: 'Il file verrà spostato nel cestino. Potrai recuperarlo in seguito.',
+      confirmLabel: 'Sposta nel cestino',
       variant: 'danger',
       onConfirm: () => {
         setConfirmModal(null)
-        doDeleteFile(fileId)
+        doTrashFile(fileId)
       },
     })
   }
 
-  async function doDeleteFolder(folderId: string) {
+  const doTrashFolder = async (folderId: string) => {
     try {
-      await deleteFolder(folderId, currentFolderId ?? undefined)
+      await trashApi.trashFolder(folderId)
       removeFromInEvidenza(folderId, 'folder')
       setDecryptedFolderNames((prev) => {
         const n = { ...prev }
@@ -1151,21 +1479,21 @@ export default function DashboardPage() {
         return n
       })
       reloadFolders()
-      showToast('Cartella eliminata')
+      showToast('Cartella spostata nel cestino')
     } catch {
-      showToast("Errore durante l'eliminazione")
+      showToast('Errore durante lo spostamento nel cestino')
     }
   }
 
   function handleDeleteFolder(folderId: string) {
     setConfirmModal({
-      title: 'Elimina cartella',
-      message: 'Eliminare questa cartella?',
-      confirmLabel: 'Elimina',
+      title: 'Sposta nel cestino',
+      message: 'La cartella verrà spostata nel cestino. Potrai recuperarla in seguito.',
+      confirmLabel: 'Sposta nel cestino',
       variant: 'danger',
       onConfirm: () => {
         setConfirmModal(null)
-        doDeleteFolder(folderId)
+        doTrashFolder(folderId)
       },
     })
   }
@@ -1187,7 +1515,7 @@ export default function DashboardPage() {
       setRenamingFolderValue('')
       setInEvidenza((prev) => {
         const next = prev.map((i) => (i.id === folderId && i.type === 'folder' ? { ...i, name: trimmed } : i))
-        try { window.localStorage.setItem(IN_EVIDENZA_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+        if (inEvidenzaKey) try { window.localStorage.setItem(inEvidenzaKey, JSON.stringify(next)) } catch { /* ignore */ }
         return next
       })
       reloadFolders()
@@ -1200,9 +1528,9 @@ export default function DashboardPage() {
   function handleDeleteSelected() {
     if (selected.size === 0) return
     setConfirmModal({
-      title: 'Elimina selezionati',
-      message: `Eliminare ${selected.size} elemento/i selezionato/i?`,
-      confirmLabel: 'Elimina',
+      title: 'Sposta nel cestino',
+      message: `Gli ${selected.size} elementi selezionati verranno spostati nel cestino. Potrai recuperarli in seguito.`,
+      confirmLabel: 'Sposta nel cestino',
       variant: 'danger',
       onConfirm: () => {
         setConfirmModal(null)
@@ -1217,7 +1545,7 @@ export default function DashboardPage() {
     for (const id of Array.from(selected)) {
       try {
         if (folderIdsSet.has(id)) {
-          await deleteFolder(id, currentFolderId ?? undefined)
+          await trashApi.trashFolder(id)
           removeFromInEvidenza(id, 'folder')
           setDecryptedFolderNames((prev) => {
             const n = { ...prev }
@@ -1226,7 +1554,7 @@ export default function DashboardPage() {
           })
           reloadFolders()
         } else {
-          await deleteFile(id, currentFolderId)
+          await trashApi.trashFile(id)
           removeFromInEvidenza(id, 'file')
           reloadFiles()
         }
@@ -1237,8 +1565,8 @@ export default function DashboardPage() {
     }
     setSelected(new Set())
     refreshStorageDashboard()
-    if (err > 0) showToast(`${ok} eliminati, ${err} errori`)
-    else showToast(ok === 1 ? 'Elemento eliminato' : `${ok} elementi eliminati`)
+    if (err > 0) showToast(`${ok} spostati nel cestino, ${err} errori`)
+    else showToast(ok === 1 ? 'Elemento spostato nel cestino' : `${ok} elementi spostati nel cestino`)
   }
 
   const handleMoveToDestination = useCallback(
@@ -1294,139 +1622,12 @@ export default function DashboardPage() {
   return (
     <div className="ax-dash-mockup-root">
 
-      {/* HEADER — identico al mockup */}
-      <header className="header">
-        <div className="header-logo-area">
-          <img src="/Logo.png" alt="AXSHARE" className="header-logo-img" style={{ height: 38, width: 'auto', objectFit: 'contain' }} />
-        </div>
-
-        <div className="search-wrap">
-          <span className="search-icon" aria-hidden>
-            <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-          </span>
-          <input
-            id="search"
-            className="search-input"
-            data-testid="search-input"
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Cerca in Axshare..."
-          />
-          {searchLoading ? (
-            <span data-testid="search-loading" style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--ax-muted)' }}>Ricerca...</span>
-          ) : searchQuery ? (
-            <button type="button" className="search-clear-btn" onClick={() => setSearchQuery('')} aria-label="Cancella">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-            </button>
-          ) : null}
-        </div>
-
-        <div className="header-spacer" />
-
-        <div className="header-actions">
-          <input ref={fileInputRef} data-testid="file-input" type="file" onChange={handleFileSelect} disabled={uploadLocked || !canUpload} style={{ display: 'none' }} />
-          <button type="button" className="icon-btn" aria-label="Notifiche" onClick={() => router.push('/notifications')}>
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
-            </svg>
-          </button>
-          <div className="header-avatar-wrap" ref={headerAvatarRef}>
-            <button
-              type="button"
-              className="header-user-block-btn"
-              onClick={(e) => { e.stopPropagation(); setHeaderAvatarOpen((o) => !o) }}
-              aria-expanded={headerAvatarOpen}
-              aria-haspopup="true"
-              aria-label="Menu utente"
-            >
-              <span className="avatar-btn avatar-btn-sm avatar-btn-circle">
-                {(user?.email ? user.email.split('@')[0].slice(0, 2) : 'U').toUpperCase()}
-              </span>
-              <span className="header-user-block-text">
-                <span className="header-user-name">{user?.display_name || user?.email?.split('@')[0] || 'Utente'}</span>
-                <span className="header-user-role">{user?.email ?? ''}</span>
-              </span>
-              <svg className={`header-user-chevron ${headerAvatarOpen ? 'open' : ''}`} width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                <polyline points="6 9 12 15 18 9" />
-              </svg>
-            </button>
-            {headerAvatarOpen && (
-              <div className="header-avatar-dropdown" role="menu">
-                <button type="button" className="header-avatar-dropdown-item" role="menuitem" onClick={() => { setHeaderAvatarOpen(false); router.push('/settings') }}>
-                  Profilo
-                </button>
-                <button type="button" className="header-avatar-dropdown-item" role="menuitem" onClick={async () => { setHeaderAvatarOpen(false); await logout(); router.push('/login') }}>
-                  Logout
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </header>
+      <AppHeader searchValue={searchQuery} onSearchChange={setSearchQuery} searchLoading={searchLoading} hasShareNotification={hasShareNotif} onClearShareNotification={() => setHasShareNotif(false)} />
+      <input ref={fileInputRef} data-testid="file-input" type="file" onChange={handleFileSelect} disabled={uploadLocked || !canUpload} style={{ display: 'none' }} />
 
       <div className="app-body">
 
-        {/* SIDEBAR */}
-        <aside className="sidebar">
-          <div className="nav-section-label">Principale</div>
-          <div className="nav-item active">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" />
-            </svg>
-            Home
-          </div>
-          <div className="nav-item" onClick={() => router.push('/dashboard')}>
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /><polyline points="2 10 22 10" />
-            </svg>
-            I miei file
-          </div>
-          <div className="nav-section-label">Libreria</div>
-          <div className="nav-item">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
-              <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
-            </svg>
-            Condivisi
-            <span className="nav-badge">3</span>
-          </div>
-          <div className="nav-item">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
-            </svg>
-            Recenti
-          </div>
-          <div className="nav-item">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-            </svg>
-            Preferiti
-          </div>
-          <div className="nav-section-label">Altro</div>
-          <div className="nav-item">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" />
-            </svg>
-            Cestino
-            <span className="nav-badge">2</span>
-          </div>
-          <div className="sidebar-footer">
-            <div className="storage-label">
-              Spazio usato <span className="storage-pct">{storageDashboard?.storage ? Math.min(100, Math.round((storageDashboard.storage.total_size_bytes / (storageDashboard.storage.storage_quota_bytes || 1)) * 100)) : 0}%</span>
-            </div>
-            <div className="storage-track">
-              <div className="storage-fill" style={{ width: `${storageDashboard?.storage ? Math.min(100, (storageDashboard.storage.total_size_bytes / (storageDashboard.storage.storage_quota_bytes || 1)) * 100) : 0}%` }} />
-            </div>
-            <div className="storage-sub">
-              {storageDashboard?.storage
-                ? `${formatFileSize(storageDashboard.storage.total_size_bytes)} di ${formatFileSize(storageDashboard.storage.storage_quota_bytes)} usati`
-                : '0 B di 1 GB usati'}
-            </div>
-          </div>
-        </aside>
+        <AppSidebar />
 
         <main className="main">
         {/* OnboardingBanner — nascosto visivamente per match con secondo screen */}
@@ -1434,28 +1635,22 @@ export default function DashboardPage() {
           <OnboardingBanner />
         </div>
 
-        {/* Banner PIN — MANTIENI logica invariata */}
-        {!user?.has_public_key && (
-          <div className="ax-dash-banner-warning"
-            data-testid="pin-not-configured-banner">
-            <span>⚠️ PIN di sicurezza non configurato.</span>
-            <button type="button" className="ax-dash-banner-btn"
-              onClick={() => router.push('/settings/security')}
-              data-testid="configure-pin-button">
-              Configura PIN
-            </button>
-          </div>
-        )}
-
         {/* Page header — titolo + Crea o carica */}
         <div className="page-header">
           <div>
-            <div className="page-title">Bentornato{user?.email ? `, ${user.email.split('@')[0]}` : ''} 👋</div>
-            <div className="page-subtitle">Ultimo accesso oggi alle 09:14. 6 file modificati di recente</div>
+            <div className="page-title">
+              {(() => {
+                const u = user as { gender?: string; sex?: string } | null | undefined
+                const saluto = u?.gender === 'female' || u?.sex === 'F' ? 'Bentornata' : 'Bentornato'
+                const nome = user?.display_name?.trim() || (user?.email ? user.email.split('@')[0] : '')
+                return `${saluto}${nome ? `, ${nome}` : ''}`
+              })()}
+            </div>
+            <div className="page-subtitle">{dataFormattata}</div>
           </div>
           <div className="crea-carica-wrap" ref={creaCaricaDropdownRef}>
             <input ref={multiFileInputRef} type="file" multiple onChange={handleMultiFileSelect} disabled={uploadLocked || !canUpload} style={{ display: 'none' }} data-testid="multi-file-input" />
-            <input ref={folderInputRef} type="file" onChange={handleFolderSelect} disabled={uploadLocked || !canUpload} style={{ display: 'none' }} data-testid="folder-upload-input" {...({ webkitdirectory: 'true' } as React.InputHTMLAttributes<HTMLInputElement>)} />
+            <input ref={folderInputRef} type="file" multiple onChange={handleFolderSelect} disabled={uploadLocked || !canUpload} style={{ display: 'none' }} data-testid="folder-upload-input" {...({ webkitdirectory: 'true' } as React.InputHTMLAttributes<HTMLInputElement>)} />
             <button type="button" className="btn-crea-carica" onClick={() => setCreaCaricaDropdownOpen((o) => !o)} aria-expanded={creaCaricaDropdownOpen} aria-haspopup="true">
               <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
               Crea o carica
@@ -1555,7 +1750,7 @@ export default function DashboardPage() {
                   return (
                     <div
                       key={`${item.type}-${item.id}`}
-                      className="folder-card folder-card-favorite"
+                      className={`folder-card folder-card-favorite ${isFolder ? 'folder-card-favorite-is-folder' : 'folder-card-favorite-is-file'}`}
                       data-testid="in-evidenza-item"
                       onClick={() => {
                         if (isFolder) {
@@ -1596,25 +1791,33 @@ export default function DashboardPage() {
                       >
                         ×
                       </button>
-                      {isFolder ? (
-                        <>
-                          <div className="folder-icon-img-wrap folder-icon-img-wrap-card-folder">
-                            <Image src={getFolderColorIcon((item as { color?: string }).color ?? (['yellow', 'gray', 'teal', 'blue', 'purple', 'green', 'orange', 'red', 'pink', 'indigo'] as const)[Math.min((folderIconPref[item.id] ?? item.folderIconIndex ?? 1) - 1, 9)] ?? 'yellow', isRunningInTauri())} alt={item.name} width={68} height={58} style={{ objectFit: 'contain' }} />
-                          </div>
-                          <div className="folder-name">{item.name}</div>
-                          <div className="folder-meta">Cartella</div>
-                        </>
-                      ) : (() => {
+                      {isFolder ? (() => {
+                        const folderData = folders.find((f) => f.id === item.id)
+                        const stats = inEvidenzaFolderStatsMap?.[item.id] ?? folderData
+                        const sizeLabel = stats?.total_size_bytes != null ? formatFileSize(stats.total_size_bytes) : '—'
+                        const fileCount = stats?.file_count
+                        const fileLabel = fileCount != null ? (fileCount === 1 ? '1 file' : `${fileCount} file`) : '—'
+                        const color = folderData?.color ?? (item as { color?: string }).color ?? (['yellow', 'gray', 'teal', 'blue', 'purple', 'green', 'orange', 'red', 'pink', 'indigo'] as const)[Math.min((folderIconPref[item.id] ?? item.folderIconIndex ?? 1) - 1, 9)] ?? 'yellow'
+                        return (
+                          <>
+                            <div className="folder-icon-img-wrap folder-icon-img-wrap-card-folder">
+                              <Image src={getFolderColorIcon(color, isRunningInTauri())} alt={item.name} width={68} height={58} style={{ objectFit: 'contain' }} />
+                            </div>
+                            <div className="folder-name">{item.name}</div>
+                            <div className="folder-meta">{sizeLabel} · {fileLabel}</div>
+                          </>
+                        )
+                      })() : (() => {
                         const file = files.find((f) => f.id === item.id) as (FileItem & { created_at?: string }) | undefined
                         const meta = inEvidenzaFileMetaMap?.[item.id]
                         const sizeBytes = item.size_bytes ?? file?.size_bytes ?? meta?.size_bytes
                         const createdAt = item.created_at ?? file?.created_at ?? meta?.created_at
                         const sizeLabel = sizeBytes != null ? formatFileSize(sizeBytes) : '—'
                         const createdLabel = createdAt ? formatRelativeModified(createdAt) : '—'
-                        const fileIconSrc = item.name.endsWith('.axs') ? getAxsFileIcon(item.name) : getFileIcon(item.name)
+                        const fileIconSrc = item.name.endsWith('.axshare') ? getAxshareFileIcon(item.name) : item.name.endsWith('.axs') ? getAxsFileIcon(item.name) : getFileIcon(item.name)
                         return (
                           <>
-                            <div className="folder-icon-img-wrap">
+                            <div className="folder-icon-img-wrap folder-icon-img-wrap-card-file">
                               <Image src={fileIconSrc} alt={item.name} width={56} height={48} style={{ objectFit: 'contain' }} unoptimized />
                             </div>
                             <div className="folder-name">{item.name}</div>
@@ -1629,14 +1832,15 @@ export default function DashboardPage() {
                   <div
                     key={`placeholder-${i}`}
                     className="folder-card folder-card-favorite ax-in-evidenza-placeholder"
-                    style={{ borderStyle: 'dashed', opacity: 0.85 }}
                   >
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--ax-muted)' }}>
-                      <svg width="32" height="32" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                      </svg>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>Aggiungi in evidenza</span>
-                      <span style={{ fontSize: 11 }}>Dalla tabella sotto</span>
+                    <div className="ax-in-evidenza-placeholder-inner">
+                      <div className="ax-in-evidenza-placeholder-icon">
+                        <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                        </svg>
+                      </div>
+                      <span className="ax-in-evidenza-placeholder-title">Aggiungi in evidenza</span>
+                      <span className="ax-in-evidenza-placeholder-sub">Dalla tabella sotto</span>
                     </div>
                   </div>
                 )
@@ -1653,7 +1857,7 @@ export default function DashboardPage() {
                 </svg>
                 Recenti
               </div>
-              <button type="button" className="section-action" onClick={() => showToast('Tutti i file e le cartelle')}>Vedi Tutti →</button>
+              <button type="button" className="section-action" onClick={() => router.push('/i-miei-file')}>Vedi Tutti →</button>
             </div>
 
             <div className="files-section" data-testid="file-list">
@@ -1769,9 +1973,9 @@ export default function DashboardPage() {
                     <th style={{ width: '40%' }}>NOME <span className="sort-icon sort-icon-plus">+</span></th>
                     <th style={{ width: '10%' }}>DIMENSIONE</th>
                     <th style={{ width: '15%' }}>PROPRIETARIO</th>
-                    <th style={{ width: '15%' }}>CONDIVISIONE</th>
-                    <th style={{ width: '15%' }}>MODIFICATO</th>
-                    <th style={{ width: '15%', textAlign: 'right' }}>AZIONI</th>
+                    <th style={{ width: '10%' }}>STATO</th>
+                    <th style={{ width: '12%' }}>CONDIVISIONI</th>
+                    <th style={{ width: '25%', textAlign: 'left' }}>ATTIVITÀ</th>
                   </tr>
                 </thead>
                 <tbody className="file-table-tbody-fixed">
@@ -1876,76 +2080,44 @@ export default function DashboardPage() {
                         <td>
                           <div className="owner-cell">
                             <div className="owner-avatar">
-                              {(user?.display_name?.trim()
-                                ? user.display_name.trim().split(/\s+/).length >= 2
-                                  ? (user.display_name.trim().split(/\s+/)[0][0] + user.display_name.trim().split(/\s+/)[1][0]).toUpperCase()
-                                  : user.display_name.trim().slice(0, 2).toUpperCase()
-                                : user?.email ? user.email.split('@')[0].slice(0, 2) : 'U'
-                              ).toUpperCase()}
+                              {user?.display_name?.trim()
+                                ? getInitialsFromDisplayName(user.display_name)
+                                : (user?.email ? user.email.split('@')[0].slice(0, 2) : 'U').toUpperCase()}
                             </div>
-                            {user?.display_name?.trim() || user?.email?.split('@')[0] || 'Tu'}
+                            {user?.display_name?.trim() || 'Tu'}
                           </div>
                         </td>
                         <td>
-                          <span className="share-badge share-private">
-                            <svg className="share-badge-icon" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg> Privata
-                          </span>
+                          <ShareBadge type={getShareBadgeType({ hasLink: false, hasTeamShare: teamShareByTargetId[folder.id] ?? false, isFolder: true })} />
                         </td>
-                        <td className="modified-cell" style={{ visibility: 'visible', overflow: 'visible' }}>
-                          {modifiedOrCreatedAt ? (
-                            <span className="modified-cell-content" style={{ display: 'inline' }}>
-                              {formatRelativeModified(modifiedOrCreatedAt)}
-                              {formatDateTimeIt(modifiedOrCreatedAt) && (
-                                <span style={{ opacity: 0.85, fontSize: '0.95em', marginLeft: 4 }}>
-                                  · {formatDateTimeIt(modifiedOrCreatedAt)}
-                                </span>
-                              )}
-                            </span>
-                          ) : (
-                            <span>—</span>
-                          )}
+                        <td className="ax-condivisioni-cell">
+                          {(() => {
+                            const users = sharedUsersByTargetId[folder.id] ?? []
+                            if (users.length === 0) return '—'
+                            const show = users.slice(0, 3)
+                            const hasMore = users.length > 3
+                            return (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                                {show.map((u) => (
+                                    <span key={u.id} className="ax-shared-avatar" title={u.display_name?.trim() || u.email} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{getInitialsFromDisplayName(u.display_name) !== '?' ? getInitialsFromDisplayName(u.display_name) : getInitialsFromEmail(u.email)}</span>
+                                  ))}
+                                  {hasMore && <span className="ax-shared-avatar-more" style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>+</span>}
+                              </span>
+                            )
+                          })()}
                         </td>
-                        <td>
-                          <div className="row-actions">
-                            <button
-                              type="button"
-                              className="row-action-btn"
-                              title="In Evidenza"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                if (inEvidenza.length >= IN_EVIDENZA_MAX) { showToast(`Massimo ${IN_EVIDENZA_MAX} elementi in evidenza`); return }
-                                if (inEvidenza.some((x) => x.id === folder.id && x.type === 'folder')) { showToast('Già in evidenza'); return }
-                                addToInEvidenza({ type: 'folder', id: folder.id, name: folderName, folderIconIndex: folderIconPref[folder.id] ?? 1 })
-                                showToast('Aggiunto a In Evidenza')
-                              }}
-                            >
-                              <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
-                            </button>
-                            <button
-                              type="button"
-                              className="row-action-btn"
-                              title="Rinomina"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setRenamingFolderId(folder.id)
-                                setRenamingFolderValue(folderName)
-                              }}
-                            >
-                              <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
-                            </button>
-                            <button
-                              type="button"
-                              className="row-action-btn"
-                              title="Elimina"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleDeleteFolder(folder.id)
-                              }}
-                              style={{ color: 'var(--ax-error)' }}
-                            >
-                              <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
-                            </button>
-                          </div>
+                        <td style={{ textAlign: 'left' }} className="activity-cell activity-cell-one-line">
+                          {(() => {
+                            const lastActivity = lastActivityByTargetId[folder.id]
+                            return lastActivity ? (
+                              <>
+                                <span className="activity-label">{getActivityLabel(lastActivity)}</span>
+                                {formatActivityDate(lastActivity.created_at) ? (
+                                  <span className="activity-date"> · {formatActivityDate(lastActivity.created_at)}</span>
+                                ) : null}
+                              </>
+                            ) : ''
+                          })()}
                         </td>
                       </tr>
                     )
@@ -2008,7 +2180,7 @@ export default function DashboardPage() {
                           <td>
                             <div className="file-name-cell">
                               <div className="file-type-icon-wrap">
-                                <Image src={displayName.endsWith('.axs') ? getAxsFileIcon(displayName) : getFileIcon(displayName, file.is_signed)} alt={getFileLabel(displayName)} width={52} height={52} className="file-type-icon" style={{ objectFit: 'contain', flexShrink: 0, opacity: openingFileId === file.id ? 0.5 : 1 }} unoptimized />
+                                <Image src={displayName.endsWith('.axshare') ? getAxshareFileIcon(displayName) : displayName.endsWith('.axs') ? getAxsFileIcon(displayName) : getFileIcon(displayName, file.is_signed)} alt={getFileLabel(displayName)} width={52} height={52} className="file-type-icon" style={{ objectFit: 'contain', flexShrink: 0, opacity: openingFileId === file.id ? 0.5 : 1 }} unoptimized />
                                 {openingFileId === file.id && (
                                   <span className="file-open-loader" aria-label={openingMode === 'download' ? 'Download in corso' : 'Apertura in corso'} />
                                 )}
@@ -2033,7 +2205,7 @@ export default function DashboardPage() {
                                         setRenamingFileName('')
                                         setInEvidenza((prev) => {
                                           const next = prev.map((i) => (i.id === file.id && i.type === 'file' ? { ...i, name: trimmed } : i))
-                                          try { window.localStorage.setItem(IN_EVIDENZA_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+                                          if (inEvidenzaKey) try { window.localStorage.setItem(inEvidenzaKey, JSON.stringify(next)) } catch { /* ignore */ }
                                           return next
                                         })
                                         showToast('File rinominato')
@@ -2065,70 +2237,65 @@ export default function DashboardPage() {
                           <td>
                             <div className="owner-cell">
                               <div className="owner-avatar">
-                                {(user?.display_name?.trim()
-                                  ? user.display_name.trim().split(/\s+/).length >= 2
-                                    ? (user.display_name.trim().split(/\s+/)[0][0] + user.display_name.trim().split(/\s+/)[1][0]).toUpperCase()
-                                    : user.display_name.trim().slice(0, 2).toUpperCase()
-                                  : user?.email ? user.email.split('@')[0].slice(0, 2) : 'U'
-                                ).toUpperCase()}
+                                {user?.display_name?.trim()
+                                  ? getInitialsFromDisplayName(user.display_name)
+                                  : (user?.email ? user.email.split('@')[0].slice(0, 2) : 'U').toUpperCase()}
                               </div>
-                              {user?.display_name?.trim() || user?.email?.split('@')[0] || 'Tu'}
+                              {user?.display_name?.trim() || 'Tu'}
                             </div>
                           </td>
                           <td>
-                            <span className={globalIdx % 3 === 0 ? 'share-badge share-private' : globalIdx % 3 === 1 ? 'share-badge share-shared' : 'share-badge share-team'}>
-                              {globalIdx % 3 === 0 ? (
-                                <><svg className="share-badge-icon" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg> Privata</>
-                              ) : globalIdx % 3 === 1 ? (
-                                <><svg className="share-badge-icon" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg> Condiviso</>
-                              ) : (
-                                <><svg className="share-badge-icon" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M20 6L9 17l-5-5" /></svg> Team</>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <ShareBadge
+                                type={getShareBadgeType({
+                                  hasLink: (linksByFileId[file.id] ?? []).filter((l) => l.is_active).length > 0,
+                                  hasTeamShare: teamShareByTargetId[file.id] ?? false,
+                                })}
+                              />
+                              {(linksByFileId[file.id] ?? []).filter((l) => l.is_active).length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    const active = (linksByFileId[file.id] ?? []).filter((l) => l.is_active)
+                                    if (active[0]) setLinkDetailModal({ fileId: file.id, fileName: displayName, link: active[0] })
+                                  }}
+                                  title="Collegamento attivo"
+                                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, padding: 0, border: 'none', borderRadius: 8, background: 'var(--ax-surface-1)', color: 'var(--ax-muted)', cursor: 'pointer' }}
+                                >
+                                  <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
+                                </button>
                               )}
-                            </span>
-                          </td>
-                          <td className="modified-cell" style={{ visibility: 'visible', overflow: 'visible' }}>
-                            {fileModifiedOrCreatedAt ? (
-                              <span className="modified-cell-content" style={{ display: 'inline' }}>
-                                {formatRelativeModified(fileModifiedOrCreatedAt)}
-                                {formatDateTimeIt(fileModifiedOrCreatedAt) && (
-                                  <span style={{ opacity: 0.85, fontSize: '0.95em', marginLeft: 4 }}>
-                                    · {formatDateTimeIt(fileModifiedOrCreatedAt)}
-                                  </span>
-                                )}
-                              </span>
-                            ) : (
-                              <span>—</span>
-                            )}
-                          </td>
-                          <td>
-                            <div className="row-actions">
-                              <button
-                                type="button"
-                                className="row-action-btn"
-                                title="In Evidenza"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  if (inEvidenza.length >= IN_EVIDENZA_MAX) { showToast(`Massimo ${IN_EVIDENZA_MAX} elementi in evidenza`); return }
-                                  if (inEvidenza.some((x) => x.id === file.id && x.type === 'file')) { showToast('Già in evidenza'); return }
-                                  addToInEvidenza({ type: 'file', id: file.id, name: displayName, size_bytes: file.size_bytes, created_at: file.created_at })
-                                  showToast('Aggiunto a In Evidenza')
-                                }}
-                              >
-                                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
-                              </button>
-                              <button type="button" className="row-action-btn" title="Dettagli" data-testid={`details-${file.id}`} onClick={(e) => { e.stopPropagation(); router.push(`/files/${file.id}`) }}>
-                                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
-                              </button>
-                              <button type="button" className="row-action-btn" title="Versioni" data-testid={`versions-${file.id}`} onClick={(e) => { e.stopPropagation(); setVersionModalFile({ fileId: file.id, fileName: displayName }) }}>
-                                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
-                              </button>
-                              <button type="button" className="row-action-btn" title="Nuova versione" data-testid={`upload-version-${file.id}`} onClick={(e) => { e.stopPropagation(); setUploadVersionFile({ fileId: file.id, fileName: displayName }) }}>
-                                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
-                              </button>
-                              <button type="button" className="row-action-btn" title="Elimina" data-testid={`delete-${file.id}`} onClick={(e) => { e.stopPropagation(); handleDelete(file.id) }} disabled={file.is_destroyed} style={{ color: 'var(--ax-error)' }}>
-                                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
-                              </button>
                             </div>
+                          </td>
+                          <td className="ax-condivisioni-cell">
+                            {(() => {
+                              const users = sharedUsersByTargetId[file.id] ?? []
+                              if (users.length === 0) return '—'
+                              const show = users.slice(0, 3)
+                              const hasMore = users.length > 3
+                              return (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                                  {show.map((u) => (
+                                    <span key={u.id} className="ax-shared-avatar" title={u.display_name?.trim() || u.email} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{getInitialsFromDisplayName(u.display_name) !== '?' ? getInitialsFromDisplayName(u.display_name) : getInitialsFromEmail(u.email)}</span>
+                                  ))}
+                                  {hasMore && <span className="ax-shared-avatar-more" style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>+</span>}
+                                </span>
+                              )
+                            })()}
+                          </td>
+                          <td style={{ textAlign: 'left' }} className="activity-cell activity-cell-one-line">
+                            {(() => {
+                              const lastActivity = lastActivityByTargetId[file.id]
+                              return lastActivity ? (
+                                <>
+                                  <span className="activity-label">{getActivityLabel(lastActivity)}</span>
+                                  {formatActivityDate(lastActivity.created_at) ? (
+                                    <span className="activity-date"> · {formatActivityDate(lastActivity.created_at)}</span>
+                                  ) : null}
+                                </>
+                              ) : ''
+                            })()}
                           </td>
                         </tr>
                   )
@@ -2185,23 +2352,44 @@ export default function DashboardPage() {
         />
       )}
 
-      {/* Modale conferma upload (stile progetto, al posto del dialog nativo) */}
-      {uploadConfirmPending && (
-        <ConfirmModal
-          open
-          title={`Caricare ${uploadConfirmPending.files.length} file in questo sito?`}
-          message={
-            uploadConfirmPending.folderName
-              ? `Verranno caricati tutti i file da "${uploadConfirmPending.folderName}". Esegui questa operazione solo se ritieni il sito affidabile.`
-              : `Verranno caricati i ${uploadConfirmPending.files.length} file selezionati. Esegui questa operazione solo se ritieni il sito affidabile.`
-          }
-          confirmLabel="Carica"
-          cancelLabel="Annulla"
-          variant="default"
-          onConfirm={doPendingUpload}
-          onCancel={() => setUploadConfirmPending(null)}
-        />
-      )}
+      {/* Modale conferma upload (come le altre: titolo, messaggio, Annulla, Carica) */}
+      {uploadConfirmPending && (() => {
+        const totalFiles = uploadConfirmPending.folders.reduce((s, f) => s + f.files.length, 0)
+        const foldersWithName = uploadConfirmPending.folders.filter((f) => f.folderName)
+        const title = totalFiles === 0 ? 'Nessun file' : `Caricare ${totalFiles} file in questo sito?`
+        const message =
+          foldersWithName.length === 1 && uploadConfirmPending.folders.length === 1
+            ? `Verranno caricati tutti i file da "${foldersWithName[0].folderName}". Esegui questa operazione solo se ritieni il sito affidabile.`
+            : foldersWithName.length > 1
+              ? `Verranno create ${foldersWithName.length} cartelle con i file selezionati. Esegui questa operazione solo se ritieni il sito affidabile.`
+              : `Verranno caricati i ${totalFiles} file selezionati. Esegui questa operazione solo se ritieni il sito affidabile.`
+        return (
+          <div className="ax-confirm-overlay" onClick={() => setUploadConfirmPending(null)} role="dialog" aria-modal="true" aria-labelledby="ax-upload-confirm-title">
+            <div className="ax-confirm-modal" onClick={(e) => e.stopPropagation()} data-testid="upload-confirm-modal">
+              <div className="ax-confirm-modal-header">
+                <h2 id="ax-upload-confirm-title" className="ax-confirm-modal-title">{title}</h2>
+                <button type="button" className="ax-confirm-modal-close" onClick={() => setUploadConfirmPending(null)} aria-label="Chiudi">
+                  <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              </div>
+              <div className="ax-confirm-modal-body">
+                <p className="ax-confirm-modal-message">{message}</p>
+                {foldersWithName.length > 1 && (
+                  <ul style={{ marginTop: 12, paddingLeft: 20, fontSize: 13, color: 'var(--ax-text)' }}>
+                    {foldersWithName.map((f) => (
+                      <li key={f.folderName} style={{ marginBottom: 4 }}>{f.folderName} ({f.files.length} file)</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="ax-confirm-modal-footer">
+                <button type="button" className="ax-confirm-btn ax-confirm-btn-secondary" onClick={() => setUploadConfirmPending(null)} data-testid="confirm-modal-cancel">Annulla</button>
+                <button type="button" className="ax-confirm-btn ax-confirm-btn-primary" onClick={() => { doPendingUpload(); }} disabled={totalFiles === 0} data-testid="confirm-modal-confirm">Carica</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Modale Crea una cartella — stile progetto, 6 colori icone */}
       {showCreateFolderModal && (
@@ -2263,78 +2451,239 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Modale Condividi — layout completo, stile progetto */}
-      {shareModal && (
-        <div className="ax-create-folder-overlay" onClick={() => { setShareModal(null); setShareModalPermissionOpen(false) }} role="dialog" aria-modal="true" aria-labelledby="ax-share-title">
-          <div className="ax-create-folder-modal ax-share-modal" onClick={(e) => e.stopPropagation()} style={{ minWidth: 420, maxWidth: 480 }}>
+      {linkModal && (
+        <CreateLinkModal
+          open
+          type={linkModal.type}
+          id={linkModal.id}
+          name={linkModal.name}
+          onClose={() => setLinkModal(null)}
+          onSuccess={(label) => {
+            showShareToast('🔗 Collegamento creato', `"${label}" · Link copiato negli appunti`)
+            if (linkModal.type === 'file') {
+              fetchLinksForFile(linkModal.id)
+              refetchActivityForFile(linkModal.id)
+            }
+          }}
+          getFileKeyForLink={linkModal.type === 'file' ? () => getFileKeyBase64ForShare(linkModal.id) : undefined}
+        />
+      )}
+
+      {linkDetailModal && (
+        <div className="ax-create-folder-overlay" onClick={() => setLinkDetailModal(null)} role="dialog" aria-modal="true" aria-labelledby="ax-link-detail-title">
+          <div className="ax-create-folder-modal" onClick={(e) => e.stopPropagation()} style={{ minWidth: 400, maxWidth: 480 }}>
             <div className="ax-create-folder-modal-header">
-              <h2 id="ax-share-title" className="ax-create-folder-modal-title">Condividi &quot;{shareModal.name}&quot;</h2>
-              <button type="button" className="ax-create-folder-modal-close" onClick={() => { setShareModal(null); setShareModalPermissionOpen(false) }} aria-label="Chiudi">
+              <h2 id="ax-link-detail-title" className="ax-create-folder-modal-title">Collegamento</h2>
+              <button type="button" className="ax-create-folder-modal-close" onClick={() => setLinkDetailModal(null)} aria-label="Chiudi">
+                <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </div>
+            <div className="ax-create-folder-modal-body">
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ax-muted)', marginBottom: 6 }}>Etichetta</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ax-text)', wordBreak: 'break-all' }}>{linkDetailModal.link.label ?? `axshare.${linkDetailModal.fileName}`}</div>
+              </div>
+              <p style={{ fontSize: 13, color: 'var(--ax-muted)', marginBottom: 16 }}>
+                Rimuovendo il collegamento, il link non funzionerà più per nessuno, anche inserendo la password.
+              </p>
+            </div>
+            <div className="ax-create-folder-modal-footer">
+              <button type="button" className="ax-create-folder-btn ax-create-folder-btn-secondary" onClick={() => setLinkDetailModal(null)}>Chiudi</button>
+              <button
+                type="button"
+                className="ax-create-folder-btn"
+                style={{ background: 'var(--ax-error)', color: 'white' }}
+                onClick={async () => {
+                  try {
+                    await shareLinksApi.revoke(linkDetailModal.link.id)
+                    await fetchLinksForFile(linkDetailModal.fileId)
+                    await refetchActivityForFile(linkDetailModal.fileId)
+                    showToast('Collegamento rimosso')
+                    setLinkDetailModal(null)
+                  } catch {
+                    showToast('Errore durante la rimozione')
+                  }
+                }}
+              >
+                Rimuovi collegamento
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modale Condividi — più larga, meno alta, stile progetto */}
+      {shareModal && (
+        <div className="ax-create-folder-overlay" onClick={() => { resetShareModalState(); setShareModal(null) }} role="dialog" aria-modal="true" aria-labelledby="ax-share-title">
+          <div className="ax-create-folder-modal ax-share-modal" onClick={(e) => e.stopPropagation()} style={{ minWidth: 560, maxWidth: 680 }}>
+            <div className="ax-create-folder-modal-header" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {shareModal.type === 'file' ? (
+                <Image src={shareModal.name.endsWith('.axshare') ? getAxshareFileIcon(shareModal.name) : shareModal.name.endsWith('.axs') ? getAxsFileIcon(shareModal.name) : getFileIcon(shareModal.name, false)} alt="" width={28} height={28} style={{ objectFit: 'contain', flexShrink: 0 }} unoptimized />
+              ) : (
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0, color: 'var(--ax-folder)' }}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+              )}
+              <h2 id="ax-share-title" className="ax-create-folder-modal-title" style={{ margin: 0, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Condividi &quot;{shareModal.name}&quot;</h2>
+              <button type="button" className="ax-create-folder-modal-close" onClick={() => { resetShareModalState(); setShareModal(null) }} aria-label="Chiudi" style={{ flexShrink: 0 }}>
                 <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
               </button>
             </div>
             <div className="ax-share-modal-body">
-              <div className="ax-share-input-row">
-                <div className="ax-share-input-wrap">
-                  <span className="ax-share-input-icon" aria-hidden>
-                    <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                  </span>
-                  <input
-                    id="ax-share-email"
-                    type="text"
-                    className="ax-share-input"
-                    value={shareModalEmail}
-                    onChange={(e) => setShareModalEmail(e.target.value)}
-                    placeholder="Aggiungi un nome, gruppo o e-mail"
-                  />
+              <div className="ax-share-modal-grid">
+                <div>
+                  <div className="ax-share-modal-section" ref={shareSearchRef}>
+                    <div className="ax-share-modal-section-title">DESTINATARI</div>
+                    <div style={{ position: 'relative', width: '100%' }}>
+                      <input
+                        type="text"
+                        className="ax-share-input"
+                        value={shareUserSearchQuery}
+                        onChange={(e) => { setShareUserSearchQuery(e.target.value); setShareSearchDropdownOpen(e.target.value.length > 0) }}
+                        onFocus={() => setShareSearchDropdownOpen(shareUserSearchQuery.length > 0)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && shareUserSearchQuery.trim()) {
+                            e.preventDefault()
+                            addRecipientUser({ id: shareUserSearchQuery.trim(), email: shareUserSearchQuery.trim(), display_name: shareUserSearchQuery.trim() })
+                          }
+                        }}
+                        placeholder="Cerca nome o email"
+                        style={{ width: '100%', height: 40, padding: '0 12px', border: '1.5px solid var(--ax-border)', borderRadius: 10, fontSize: 14, background: 'var(--ax-surface-0)', boxSizing: 'border-box' }}
+                      />
+                      {shareSearchDropdownOpen && (
+                        <div
+                          className="ax-share-search-dropdown"
+                          style={{
+                            position: 'absolute',
+                            top: '100%',
+                            left: 0,
+                            right: 0,
+                            marginTop: 6,
+                            background: 'var(--ax-surface-0)',
+                            border: '1px solid var(--ax-border)',
+                            borderRadius: 12,
+                            boxShadow: '0 10px 40px rgba(30,58,95,0.14)',
+                            zIndex: 10,
+                            maxHeight: 200,
+                            overflowY: 'auto',
+                          }}
+                        >
+                          {shareUserSearchQuery.trim() ? (
+                            <button
+                              type="button"
+                              onClick={() => addRecipientUser({ id: shareUserSearchQuery.trim(), email: shareUserSearchQuery.trim(), display_name: shareUserSearchQuery.trim() })}
+                              style={{
+                                width: '100%',
+                                padding: '12px 14px',
+                                border: 'none',
+                                background: 'transparent',
+                                cursor: 'pointer',
+                                fontFamily: 'inherit',
+                                fontSize: 14,
+                                color: 'var(--ax-text)',
+                                textAlign: 'left',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 12,
+                                borderRadius: 10,
+                                transition: 'background 0.15s ease',
+                              }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--ax-surface-1)' }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+                            >
+                              <span style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 600, flexShrink: 0 }}>{(shareUserSearchQuery.trim()[0] ?? '?').toUpperCase()}</span>
+                              <span style={{ flex: 1, minWidth: 0 }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span style={{ fontWeight: 500 }}>Aggiungi</span>
+                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ flexShrink: 0, color: 'var(--ax-blue)' }}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                                </span>
+                                <span style={{ display: 'block', fontSize: 13, color: 'var(--ax-muted)', marginTop: 2, wordBreak: 'break-all' }}>{shareUserSearchQuery.trim()}</span>
+                              </span>
+                            </button>
+                          ) : (
+                            <div style={{ padding: '14px 16px', fontSize: 13, color: 'var(--ax-muted)' }}>Digita nome o email per cercare</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="ax-share-modal-section">
+                    <div className="ax-share-modal-section-title">PERMESSI</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
+                        <input type="radio" name="share-permission" checked={sharePermission === 'read'} onChange={() => setSharePermission('read')} />
+                        <span>Lettura</span>
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
+                        <input type="radio" name="share-permission" checked={sharePermission === 'write'} onChange={() => setSharePermission('write')} />
+                        <span>Lettura e scrittura</span>
+                      </label>
+                    </div>
+                  </div>
+                  <div className="ax-share-modal-section">
+                    <div className="ax-share-modal-section-title">BLOCCHI</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
+                        <input type="checkbox" checked={shareBlockForward} onChange={(e) => setShareBlockForward(e.target.checked)} />
+                        <span>Non può inoltrare il link</span>
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
+                        <input type="checkbox" checked={shareBlockDelete} onChange={(e) => setShareBlockDelete(e.target.checked)} />
+                        <span>Non può eliminare i file</span>
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
+                        <input type="checkbox" checked={shareBlockDownload} onChange={(e) => { setShareBlockDownload(e.target.checked); if (e.target.checked) setSharePermission('read') }} />
+                        <span>Non può scaricare</span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
-                <div className="ax-share-permission-wrap" ref={shareModalPermissionRef}>
-                  <button
-                    type="button"
-                    className="ax-share-permission-trigger"
-                    onClick={() => setShareModalPermissionOpen((o) => !o)}
-                    aria-expanded={shareModalPermissionOpen}
-                    aria-haspopup="true"
-                  >
-                    <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
-                    <span className="ax-share-permission-label">
-                      {shareModalLevel === 'write' ? 'Può modificare' : shareModalLevel === 'read_no_download' ? 'Solo visualizzazione' : 'Può visualizzare'}
-                    </span>
-                  </button>
-                  {shareModalPermissionOpen && (
-                    <div className="ax-share-permission-dropdown">
-                      <button type="button" className="ax-share-permission-option" onClick={() => { setShareModalLevel('write'); setShareModalPermissionOpen(false) }}>
-                        <span className="ax-share-permission-option-title">Può modificare</span>
-                        <span className="ax-share-permission-option-desc">Apporta le modifiche</span>
-                      </button>
-                      <button type="button" className="ax-share-permission-option" onClick={() => { setShareModalLevel('read'); setShareModalPermissionOpen(false) }}>
-                        <span className="ax-share-permission-option-title">Può visualizzare</span>
-                        <span className="ax-share-permission-option-desc">Non è possibile apportare modifiche</span>
-                      </button>
-                      <div className="ax-share-permission-divider" />
-                      <button type="button" className="ax-share-permission-option" onClick={() => { setShareModalLevel('read_no_download'); setShareModalPermissionOpen(false) }}>
-                        <span className="ax-share-permission-option-title">Solo visualizzazione</span>
-                        <span className="ax-share-permission-option-desc">Può visualizzare, ma non scaricare</span>
-                      </button>
+                <div>
+                  <div className="ax-share-modal-section">
+                    <div className="ax-share-modal-section-title">SCADENZA</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
+                        <input type="radio" name="share-expiry" checked={shareExpiry === 'never'} onChange={() => setShareExpiry('never')} />
+                        <span>Nessuna scadenza</span>
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
+                        <input type="radio" name="share-expiry" checked={shareExpiry === 'custom'} onChange={() => setShareExpiry('custom')} />
+                        <span>Imposta scadenza</span>
+                      </label>
+                      {shareExpiry === 'custom' && (
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 24, marginTop: 8 }}>
+                          <input type="date" value={shareExpiryDate} onChange={(e) => setShareExpiryDate(e.target.value)} min={new Date().toISOString().split('T')[0]} style={{ flex: 1, height: 40, padding: '0 10px', border: '1.5px solid var(--ax-border)', borderRadius: 10, fontSize: 14 }} />
+                          <input type="time" value={shareExpiryTime} onChange={(e) => setShareExpiryTime(e.target.value)} style={{ flex: 1, height: 40, padding: '0 10px', border: '1.5px solid var(--ax-border)', borderRadius: 10, fontSize: 14 }} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="ax-share-modal-section">
+                    <div className="ax-share-modal-section-title">PIN DI ACCESSO</div>
+                    <p style={{ fontSize: 12, color: 'var(--ax-muted)', marginBottom: 10, lineHeight: 1.4 }}>Se attivi &quot;Sì&quot;, il destinatario dovrà inserire il proprio PIN (quello già configurato al primo accesso) per aprire il contenuto condiviso.</p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <button type="button" className={sharePinRequired ? 'ax-create-folder-btn ax-create-folder-btn-secondary' : 'ax-create-folder-btn ax-create-folder-btn-primary'} style={{ padding: '8px 16px', borderRadius: 10, fontSize: 13 }} onClick={() => setSharePinRequired(false)}>No</button>
+                      <button type="button" className={!sharePinRequired ? 'ax-create-folder-btn ax-create-folder-btn-secondary' : 'ax-create-folder-btn ax-create-folder-btn-primary'} style={{ padding: '8px 16px', borderRadius: 10, fontSize: 13 }} onClick={() => setSharePinRequired(true)}>Sì</button>
+                    </div>
+                  </div>
+                  {shareRecipientUsers.length > 0 && (
+                    <div className="ax-share-modal-section" style={{ marginTop: 8 }}>
+                      <div className="ax-share-modal-section-title">DESTINATARI AGGIUNTI</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {shareRecipientUsers.map((u) => (
+                          <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: 'var(--ax-surface-1)', borderRadius: 10 }}>
+                            <span style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 600, flexShrink: 0 }}>{(u.display_name || u.email)[0].toUpperCase()}</span>
+                            <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: 'var(--ax-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.display_name || u.email}</span>
+                            <button type="button" onClick={() => removeRecipientUser(u.id)} aria-label="Rimuovi" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--ax-muted)', lineHeight: 1 }}>×</button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
-              <div className="ax-share-shared-section">
-                <span className="ax-share-shared-label">Condiviso con</span>
-                <p className="ax-share-shared-empty">Nessun accesso condiviso. Aggiungi un nome o e-mail sopra.</p>
-              </div>
-              <div className="ax-share-message-option">
-                <button type="button" className="ax-share-message-link" onClick={() => showToast('Messaggio opzionale – disponibile a breve')}>
-                  Aggiungi un messaggio
-                </button>
-              </div>
             </div>
             <div className="ax-create-folder-modal-footer">
-              <button type="button" className="ax-create-folder-btn ax-create-folder-btn-primary" disabled={!shareModalEmail.trim()} onClick={() => { showToast('Condivisione richiesta'); setShareModal(null); setShareModalPermissionOpen(false) }}>
-                Condividi
-              </button>
-              <button type="button" className="ax-create-folder-btn ax-create-folder-btn-secondary" onClick={() => { setShareModal(null); setShareModalPermissionOpen(false) }}>Annulla</button>
+              <button type="button" className="ax-create-folder-btn ax-create-folder-btn-secondary" onClick={() => { resetShareModalState(); setShareModal(null) }}>Annulla</button>
+              <button type="button" className="ax-create-folder-btn ax-create-folder-btn-primary" disabled={shareExpiry === 'custom' && !shareExpiryDate} onClick={() => handleShare()}>Condividi</button>
             </div>
           </div>
         </div>
@@ -2606,7 +2955,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   className="ax-preview-toolbar-btn ax-preview-toolbar-btn-primary"
-                  onClick={() => previewFileId && setShareModal({ type: 'file', id: previewFileId, name: previewName })}
+                  onClick={() => { if (previewFileId) { resetShareModalState(); setShareModal({ type: 'file', id: previewFileId, name: previewName }) } }}
                 >
                   Condividi
                 </button>
@@ -2733,7 +3082,7 @@ export default function DashboardPage() {
                 </svg>
               ),
               label: 'Condividi',
-              action: () => { setShareModal({ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name }); setShareModalEmail(''); setShareModalLevel('read') },
+              action: () => { resetShareModalState(); setShareModal({ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name }) },
             },
             {
               icon: (
@@ -2745,11 +3094,8 @@ export default function DashboardPage() {
               ),
               label: 'Copia collegamento',
               action: () => {
-                const url = contextMenu.type === 'file'
-                  ? `${typeof window !== 'undefined' ? window.location.origin : ''}/files/${contextMenu.id}`
-                  : `${typeof window !== 'undefined' ? window.location.origin : ''}/dashboard?folder=${contextMenu.id}`
-                navigator.clipboard.writeText(url)
-                showToast('Link copiato negli appunti!')
+                setLinkModal({ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name })
+                setContextMenu(null)
               },
             },
             {
@@ -2824,6 +3170,15 @@ export default function DashboardPage() {
                 showToast('Aggiunto a In Evidenza')
               },
             },
+            {
+              icon: (
+                <svg width="14" height="14" fill={favorites.has(contextMenu.id) ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                </svg>
+              ),
+              label: favorites.has(contextMenu.id) ? 'Rimuovi dai preferiti' : 'Aggiungi a preferiti',
+              action: () => { toggleFavorite(contextMenu.id); setContextMenu(null) },
+            },
           ] as Array<{ icon: React.ReactNode; label: string; action: () => void; show?: boolean }>)
             .filter((item) => item.show !== false)
             .map((item) => (
@@ -2884,6 +3239,35 @@ export default function DashboardPage() {
       <div className={`ax-dash-toast${toast ? ' show' : ''}`} role="status" aria-live="polite">
         {toast ?? ''}
       </div>
+
+      {shareToast && (
+        <div className={`ax-share-toast${shareToast.visible ? ' show' : ''}${shareToast.hiding ? ' hide' : ''}`}>
+          <div className="ax-share-toast-header">
+            <div className="ax-share-toast-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ax-accent,#3b82f6)" strokeWidth="2.5">
+                <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                <polyline points="16 6 12 2 8 6" />
+                <line x1="12" y1="2" x2="12" y2="15" />
+              </svg>
+            </div>
+            <span className="ax-share-toast-title">{shareToast.title}</span>
+            <button
+              type="button"
+              className="ax-share-toast-close"
+              onClick={() => {
+                setShareToast(null)
+                if (shareToastTimerRef.current) clearTimeout(shareToastTimerRef.current)
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+          <div className="ax-share-toast-body">{shareToast.body}</div>
+          <div className="ax-share-toast-progress" key={shareToast.title} />
+        </div>
+      )}
     </div>
   )
 }

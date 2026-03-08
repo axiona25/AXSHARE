@@ -136,6 +136,10 @@ body {
   padding: 32px 48px;
   box-shadow: 0 4px 6px rgba(30,58,95,0.04), 0 12px 40px rgba(30,58,95,0.1), 0 0 0 1px rgba(50,153,243,0.06);
 }
+.ax-login-card-register .ax-login-modal-back {
+  display: block;
+  margin-bottom: 12px;
+}
 
 .ax-login-form-heading {
   font-size: 22px;
@@ -543,9 +547,44 @@ body {
   align-items: center;
 }
 
-/* Modale Condividi — layout completo (stile progetto) */
+/* Modale Condividi — più larga, meno alta, stile progetto */
+.ax-share-modal {
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
 .ax-share-modal .ax-share-modal-body {
-  padding: 20px 24px;
+  padding: 20px 28px 16px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.ax-share-modal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px 32px;
+  align-items: start;
+}
+.ax-share-modal-section {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+.ax-share-modal-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ax-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+}
+.ax-share-modal-section + .ax-share-modal-section {
+  margin-top: 18px;
+}
+@media (max-width: 640px) {
+  .ax-share-modal-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .ax-share-input-row {
   display: flex;
@@ -907,6 +946,120 @@ body {
   font-weight: 600;
   color: var(--ax-blue-mid);
   letter-spacing: 0.03em;
+}
+
+.ax-login-card-footer-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: var(--ax-blue);
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  font-family: inherit;
+}
+.ax-login-card-footer-link:hover {
+  text-decoration: underline;
+}
+
+.ax-login-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(13, 38, 69, 0.4);
+  padding: 24px;
+}
+.ax-login-modal-card {
+  background: var(--ax-surface-0);
+  border-radius: 16px;
+  box-shadow: 0 24px 48px rgba(30, 58, 95, 0.18);
+  max-width: 420px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 24px;
+}
+.ax-login-modal-header {
+  margin-bottom: 20px;
+  position: relative;
+}
+.ax-login-modal-back {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  color: var(--ax-text-muted);
+  cursor: pointer;
+  margin-bottom: 8px;
+  font-family: inherit;
+}
+.ax-login-modal-back:hover {
+  color: var(--ax-blue);
+  text-decoration: underline;
+}
+.ax-login-modal-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ax-text);
+  margin: 0;
+}
+.ax-reg-criteria {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--ax-text-muted);
+}
+.ax-reg-criterion {
+  margin-bottom: 2px;
+}
+.ax-reg-criterion.ok {
+  color: var(--ax-success);
+}
+.ax-reg-pin-help {
+  font-size: 13px;
+  color: var(--ax-text-muted);
+  margin: 0 0 20px 0;
+  line-height: 1.45;
+}
+.ax-reg-pin-dots {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 8px;
+  font-size: 18px;
+  letter-spacing: 4px;
+}
+.ax-reg-pin-dot {
+  color: var(--ax-border);
+}
+.ax-reg-pin-dot.filled {
+  color: var(--ax-blue);
+}
+.ax-reg-success-toast {
+  padding: 16px 20px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 12px;
+  color: var(--ax-success);
+  font-weight: 600;
+  font-size: 14px;
+  text-align: center;
+}
+.ax-reg-toast {
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 10px;
+  color: var(--ax-error);
+  font-weight: 600;
+  font-size: 13px;
+  text-align: center;
 }
 
 /* ── AXSHARE Dashboard (from axshare-dashboard.html) ── */
@@ -1963,6 +2116,54 @@ body {
   opacity: 1;
 }
 
+/* Placeholder card "In Evidenza" — centrato, stile moderno come empty state */
+.ax-dash-mockup-root .folder-card-favorite.ax-in-evidenza-placeholder {
+  min-height: 160px;
+  border-style: dashed;
+  border-color: var(--ax-border);
+  background: var(--ax-surface-1);
+  align-items: center;
+  justify-content: center;
+  padding: 20px 16px;
+}
+.ax-dash-mockup-root .folder-card-favorite.ax-in-evidenza-placeholder:hover {
+  background: var(--ax-surface-2);
+  border-color: var(--ax-blue-light);
+}
+.ax-dash-mockup-root .ax-in-evidenza-placeholder-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+.ax-dash-mockup-root .ax-in-evidenza-placeholder-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--ax-surface-2) 0%, var(--ax-border) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ax-muted);
+  flex-shrink: 0;
+}
+.ax-dash-mockup-root .ax-in-evidenza-placeholder-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ax-text);
+  letter-spacing: -0.01em;
+}
+.ax-dash-mockup-root .ax-in-evidenza-placeholder-sub {
+  font-size: 11px;
+  color: var(--ax-muted);
+  line-height: 1.4;
+}
+
 /* Cartelle preferite — come nel mockup: icona cartella + checkmark, card con icona piena e glyph bianco */
 .ax-dash-mockup-root .cartelle-preferite-header .section-title-folder-icon {
   color: var(--ax-muted);
@@ -1977,6 +2178,10 @@ body {
   transition: all 0.2s;
   display: flex;
   flex-direction: column;
+}
+/* Solo card file: meno padding sotto per compensare il margin sopra l’icona, così l’altezza resta uguale */
+.ax-dash-mockup-root .folder-card-favorite-is-file {
+  padding: 18px 16px 6px;
 }
 .ax-dash-mockup-root .folder-card-favorite:hover {
   border-color: var(--ax-blue-light);
@@ -1999,10 +2204,17 @@ body {
   align-items: center;
   justify-content: flex-start;
 }
-.ax-dash-mockup-root .folder-card-favorite .folder-icon-img-wrap-card-folder {
+/* Card cartella: layout originale, nessun margin sopra l’icona */
+.ax-dash-mockup-root .folder-card-favorite-is-folder .folder-icon-img-wrap-card-folder {
   width: 68px;
   height: 58px;
-  margin-bottom: 4px;
+  margin-bottom: 14px;
+}
+/* Card file: padding sopra l’icona (icona e contenuto più in basso), dimensioni card invariate */
+.ax-dash-mockup-root .folder-card-favorite-is-file .folder-icon-img-wrap-card-file {
+  padding-top: 10px;
+  margin-top: 12px;
+  margin-bottom: 14px;
 }
 .ax-dash-mockup-root .folder-card-favorite .folder-icon-img-wrap-card-folder img {
   width: 68px !important;
@@ -2150,6 +2362,22 @@ body {
   width: 100%;
   border-collapse: collapse;
 }
+/* Pagina I miei file: box tabella mostra tutte le righe (contenuti + vuote), nessuno scroll */
+.ax-dash-mockup-root .file-table-scroll-wrap {
+  overflow-y: visible;
+  min-height: 0;
+}
+.ax-dash-mockup-root .file-table-scroll-wrap .file-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.ax-dash-mockup-root .file-table-scroll-wrap .file-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #FAFCFF;
+  box-shadow: 0 1px 0 var(--ax-surface-2);
+}
 .ax-dash-mockup-root .file-table th {
   padding: 10px 20px;
   text-align: left;
@@ -2226,6 +2454,32 @@ body {
 }
 .ax-dash-mockup-root .file-table tbody tr:hover { background: var(--ax-surface-1); }
 .ax-dash-mockup-root .file-table tbody tr.file-table-empty-row:hover { background: transparent; }
+/* Colonna Attività: descrizione e data/ora su due righe */
+.ax-dash-mockup-root .file-table td.activity-cell .activity-label {
+  display: block;
+  font-weight: 500;
+  color: var(--ax-text);
+}
+.ax-dash-mockup-root .file-table td.activity-cell .activity-date {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--ax-muted);
+  opacity: 0.85;
+  font-weight: 400;
+}
+/* Dashboard: Attività su una riga, stesso carattere, data/ora grigio più tenue */
+.ax-dash-mockup-root .file-table td.activity-cell.activity-cell-one-line .activity-label {
+  display: inline;
+}
+.ax-dash-mockup-root .file-table td.activity-cell.activity-cell-one-line .activity-date {
+  display: inline;
+  margin-top: 0;
+  font-size: inherit;
+  font-weight: 400;
+  color: var(--ax-muted);
+  opacity: 0.9;
+}
 .ax-dash-mockup-root .file-name-cell {
   display: flex;
   align-items: center;
@@ -2439,6 +2693,221 @@ body {
 }
 .ax-dash-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* Toast notifica condivisione - entra da destra, esce a destra */
+.ax-share-toast {
+  position: fixed;
+  top: 72px;
+  right: -420px;
+  width: 380px;
+  background: var(--ax-bg-primary, #ffffff);
+  border: 1px solid var(--ax-border, #e5e7eb);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06);
+  padding: 16px 18px 12px 18px;
+  z-index: 99999;
+  transition: right 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ax-share-toast.show {
+  right: 24px;
+}
+
+.ax-share-toast.hide {
+  right: -420px;
+  transition: right 0.35s cubic-bezier(0.4, 0, 1, 1);
+}
+
+.ax-share-toast-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.ax-share-toast-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--ax-accent-light, #eff6ff);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ax-share-toast-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ax-text-primary, #111827);
+  flex: 1;
+}
+
+.ax-share-toast-close {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--ax-text-secondary, #6b7280);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  pointer-events: all;
+}
+
+.ax-share-toast-body {
+  font-size: 12px;
+  color: var(--ax-text-secondary, #6b7280);
+  margin-left: 42px;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.ax-share-toast-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: var(--ax-accent, #3b82f6);
+  border-radius: 0 0 0 16px;
+  width: 100%;
+  transform-origin: left;
+  animation: shareToastProgress 4s linear forwards;
+}
+
+@keyframes shareToastProgress {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+
+/* Badge campanella notifiche */
+.ax-notif-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  border: 2px solid var(--ax-bg-primary, #fff);
+  animation: badgePulse 2s ease-in-out infinite;
+}
+
+@keyframes badgePulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.8; }
+}
+
+/* Menu notifiche sotto la campanella */
+.ax-dash-mockup-root .header-notif-wrap {
+  position: relative;
+}
+.ax-dash-mockup-root .ax-notif-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 360px;
+  max-width: min(360px, calc(100vw - 24px));
+  max-height: 420px;
+  background: var(--ax-bg-primary, #fff);
+  border: 1px solid var(--ax-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(30, 58, 95, 0.12);
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ax-dash-mockup-root .ax-notif-dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ax-border);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ax-text);
+}
+.ax-dash-mockup-root .ax-notif-dropdown-vedi-tutti {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ax-blue);
+  text-decoration: none;
+}
+.ax-dash-mockup-root .ax-notif-dropdown-vedi-tutti:hover {
+  text-decoration: underline;
+}
+.ax-dash-mockup-root .ax-notif-dropdown-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+.ax-dash-mockup-root .ax-notif-dropdown-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ax-muted);
+}
+.ax-dash-mockup-root .ax-notif-item {
+  position: relative;
+  padding: 10px 32px 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+.ax-dash-mockup-root .ax-notif-item:hover {
+  background: var(--ax-surface-1);
+}
+.ax-dash-mockup-root .ax-notif-item-unread {
+  background: rgba(var(--ax-blue-rgb, 30, 58, 95), 0.06);
+}
+.ax-dash-mockup-root .ax-notif-item-unread:hover {
+  background: rgba(var(--ax-blue-rgb, 30, 58, 95), 0.1);
+}
+.ax-dash-mockup-root .ax-notif-item-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--ax-muted);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.ax-dash-mockup-root .ax-notif-item-close:hover {
+  color: var(--ax-text);
+  background: var(--ax-surface-2);
+}
+.ax-dash-mockup-root .ax-notif-item-body {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ax-dash-mockup-root .ax-notif-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ax-text);
+}
+.ax-dash-mockup-root .ax-notif-item-text {
+  font-size: 12px;
+  color: var(--ax-muted);
+  line-height: 1.35;
+}
+.ax-dash-mockup-root .ax-notif-item-date {
+  font-size: 11px;
+  color: var(--ax-muted);
+  margin-top: 4px;
+}
+
 /* Vista home: nasconde onboarding, breadcrumb e form per layout identico al mockup */
 .ax-dash-mockup-root .ax-dash-hide-onboarding { display: none !important; }
 .ax-dash-mockup-root .ax-dash-breadcrumb-hidden { display: none !important; }
@@ -2494,4 +2963,308 @@ input[data-testid="search-input"]:focus {
   border-color: var(--ax-blue) !important;
   background: white !important;
   box-shadow: 0 0 0 3px rgba(50,153,243,0.12) !important;
+}
+
+/* ─── AXSHARE Desktop Client (finestra compatta 420×580) ───────────────────── */
+.ax-desktop-client {
+  --ax-bg-primary: var(--ax-surface-0);
+  --ax-bg-secondary: var(--ax-surface-1);
+  width: 420px;
+  min-height: 580px;
+  height: 100%;
+  background: var(--ax-bg-primary);
+  font-family: var(--font-plus-jakarta, 'Plus Jakarta Sans'), system-ui, sans-serif;
+  color: var(--ax-text);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.ax-desktop-placeholder {
+  padding: 2rem;
+  text-align: center;
+  color: var(--ax-text-muted);
+}
+
+.ax-desktop-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ax-border);
+  flex-shrink: 0;
+}
+
+.ax-desktop-logo-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ax-desktop-logo {
+  flex-shrink: 0;
+}
+
+.ax-desktop-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ax-navy);
+}
+
+.ax-desktop-services-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ax-text-muted);
+}
+
+.ax-desktop-btn-icon {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ax-bg-secondary);
+  border: 1px solid var(--ax-border);
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--ax-text);
+}
+
+.ax-desktop-section {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ax-border);
+  flex-shrink: 0;
+}
+
+.ax-desktop-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ax-text-muted);
+  margin: 0 0 8px 0;
+}
+
+.ax-desktop-card {
+  background: var(--ax-bg-secondary);
+  border: 1px solid var(--ax-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.ax-desktop-session-line {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ax-navy);
+  margin-bottom: 4px;
+}
+
+.ax-desktop-session-email {
+  font-size: 12px;
+  color: var(--ax-text-muted);
+  margin-bottom: 6px;
+}
+
+.ax-desktop-session-keys {
+  font-size: 11px;
+  color: var(--ax-text-muted);
+  display: flex;
+  gap: 12px;
+}
+
+.ax-desktop-disk-path {
+  font-size: 12px;
+  color: var(--ax-text);
+  margin-bottom: 10px;
+}
+
+.ax-desktop-btn {
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  font-family: inherit;
+}
+
+.ax-desktop-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ax-desktop-btn-primary {
+  background: var(--ax-blue);
+  color: white;
+  border-color: var(--ax-blue);
+}
+
+.ax-desktop-btn-primary:hover:not(:disabled) {
+  background: var(--ax-blue-mid);
+}
+
+.ax-desktop-btn-secondary {
+  background: var(--ax-bg-secondary);
+  color: var(--ax-text);
+  border-color: var(--ax-border);
+}
+
+.ax-desktop-btn-secondary:hover:not(:disabled) {
+  background: var(--ax-surface-2);
+}
+
+.ax-desktop-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ax-desktop-sync-row {
+  font-size: 12px;
+  color: var(--ax-text);
+  margin-bottom: 6px;
+}
+
+.ax-desktop-muted {
+  color: var(--ax-text-muted);
+  font-size: 12px;
+}
+
+.ax-desktop-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.ax-desktop-dot-on {
+  background: #22c55e;
+}
+
+.ax-desktop-dot-off {
+  background: #ef4444;
+}
+
+.ax-desktop-dot-warn {
+  background: #f59e0b;
+}
+
+.ax-desktop-dot-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ax-desktop-services-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ax-desktop-service-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--ax-text);
+}
+
+.ax-desktop-local-files {
+  font-size: 12px;
+  color: var(--ax-text);
+}
+
+.ax-desktop-local-files .ax-desktop-btn-row {
+  margin-top: 8px;
+}
+
+/* Step login / pin (centrato 420×580) */
+.ax-desktop-step {
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.ax-desktop-step-inner {
+  width: 100%;
+  max-width: 320px;
+}
+
+.ax-desktop-step .ax-desktop-logo-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.ax-desktop-step-logo {
+  flex-shrink: 0;
+}
+
+.ax-desktop-step .ax-desktop-title {
+  font-size: 18px;
+}
+
+.ax-desktop-form {
+  margin-top: 8px;
+}
+
+.ax-desktop-form .ax-login-field {
+  margin-bottom: 14px;
+}
+
+.ax-desktop-form .ax-login-btn-primary {
+  margin-top: 8px;
+}
+
+.ax-desktop-form .ax-login-btn-social {
+  margin-top: 12px;
+}
+
+.ax-desktop-error {
+  font-size: 13px;
+  color: var(--ax-error);
+  margin: 8px 0 0 0;
+}
+
+.ax-desktop-footer-badge {
+  text-align: center;
+  font-size: 12px;
+  color: var(--ax-text-muted);
+  margin-top: 20px;
+}
+
+.ax-desktop-pin-dots {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.ax-desktop-pin-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--ax-border);
+  transition: background 0.2s;
+}
+
+.ax-desktop-pin-dot.filled {
+  background: var(--ax-blue);
+}
+
+.ax-desktop-pin-input {
+  margin-bottom: 8px;
+  text-align: center;
+  letter-spacing: 0.2em;
+}
+
+.ax-desktop-btn-lock {
+  font-size: 11px;
+  padding: 6px 10px;
 }

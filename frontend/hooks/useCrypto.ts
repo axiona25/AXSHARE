@@ -74,6 +74,8 @@ interface UseCryptoReturn {
     recipientUserId: string,
     fileKeyHex: string
   ) => Promise<boolean>
+  /** Chiave file in base64 per link pubblico (share link). Restituisce null se sessione non attiva. */
+  getFileKeyBase64ForShare: (fileId: string) => Promise<string | null>
   clearError: () => void
 }
 
@@ -391,6 +393,23 @@ export function useCrypto(): UseCryptoReturn {
     []
   )
 
+  const getFileKeyBase64ForShare = useCallback(
+    async (fileId: string): Promise<string | null> => {
+      if (!user || !sessionPrivateKey) return null
+      try {
+        const keyResp = await filesApi.getKey(fileId)
+        const fileKey = await decryptFileKeyWithRSA(
+          keyResp.data.file_key_encrypted,
+          sessionPrivateKey
+        )
+        return bytesToBase64(fileKey)
+      } catch {
+        return null
+      }
+    },
+    [user, sessionPrivateKey]
+  )
+
   /**
    * Decifra i nomi di una lista di file (name_encrypted cifrato con fileKey).
    * Usa la chiave privata in sessione.
@@ -547,6 +566,7 @@ export function useCrypto(): UseCryptoReturn {
     decryptFileNamesAndKeys,
     encryptFileNameForRename,
     shareFile,
+    getFileKeyBase64ForShare,
     clearError,
   }
 }

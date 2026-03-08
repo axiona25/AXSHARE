@@ -100,7 +100,7 @@ export default function LoginPage() {
         <div className="ax-login-card">
           {step === 'credentials' && (
             <>
-              <div className="ax-login-form-heading">Bentornato 👋</div>
+              <div className="ax-login-form-heading">Benvenuto in AXShare</div>
               <div className="ax-login-form-subheading">
                 Accedi al tuo account per continuare.
               </div>
@@ -124,6 +124,7 @@ export default function LoginPage() {
                         onChange={(e) => setDevEmail(e.target.value)}
                         required
                         placeholder="nome@azienda.com"
+                        autoComplete="email"
                       />
                     </div>
                     <div className="ax-login-field">
@@ -137,6 +138,7 @@ export default function LoginPage() {
                         onChange={(e) => setDevPassword(e.target.value)}
                         required
                         placeholder="••••••••"
+                        autoComplete="current-password"
                       />
                     </div>
                     <button
@@ -183,34 +185,6 @@ export default function LoginPage() {
                 </>
               )}
 
-              <div className="ax-login-divider">
-                <div className="ax-login-divider-line" />
-                <span className="ax-login-divider-text">oppure continua con</span>
-                <div className="ax-login-divider-line" />
-              </div>
-
-              <section data-testid="passkey-login-section">
-                <p style={{ fontSize: 13, color: 'var(--ax-text-muted)', marginBottom: 12 }}>
-                  Usa la tua biometria o chiave di sicurezza hardware.
-                </p>
-                <button
-                  type="button"
-                  className="ax-login-btn-social"
-                  data-testid="passkey-login-button"
-                  onClick={async () => {
-                    clearError()
-                    if (!email.trim()) return
-                    const ok = await loginWithPasskey(email.trim())
-                    if (ok) {
-                      await refreshUser()
-                      router.push('/dashboard')
-                    }
-                  }}
-                  disabled={isLoading}
-                >
-                  {isLoading ? 'In corso...' : 'Accedi con passkey'}
-                </button>
-              </section>
             </>
           )}
 
@@ -257,13 +231,13 @@ export default function LoginPage() {
 
           <div className="ax-login-card-footer">
             Non hai un account?{' '}
-            <Link href="/register" data-testid="register-link">
+            <Link href="/register" className="ax-login-card-footer-link" data-testid="register-link">
               Registrati
             </Link>
           </div>
 
           <div className="ax-login-encrypt-badge">
-            🔒 Crittografia end-to-end
+            🔒 AES-256-GCM · End-to-end encrypted · Zero-knowledge
           </div>
         </div>
       </div>

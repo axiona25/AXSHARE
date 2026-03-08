@@ -105,6 +105,18 @@ export function getAxsFileIcon(originalName: string): string {
   return AXS_ICON_MAP[ext] ?? '/icons/axs_axs.svg'
 }
 
+/**
+ * File cifrati desktop (estensione .axshare): documento.pdf.axshare
+ */
+export function getAxshareFileIcon(fileName: string): string {
+  const withoutAxshare = fileName.endsWith('.axshare')
+    ? fileName.slice(0, -8)
+    : fileName
+  const parts = withoutAxshare.split('.')
+  const ext = parts.length > 1 ? parts[parts.length - 1].toLowerCase() : ''
+  return AXS_ICON_MAP[ext] ?? '/icons/axs_axs.svg'
+}
+
 function getExtension(fileName: string): string {
   if (!fileName || typeof fileName !== 'string') return ''
   const lastDot = fileName.lastIndexOf('.')

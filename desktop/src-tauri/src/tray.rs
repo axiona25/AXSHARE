@@ -62,6 +62,10 @@ pub fn setup_tray(app: &mut App) -> tauri::Result<()> {
                 }
                 "disk" => {
                     if let Some(window) = app.get_webview_window("main") {
+                        #[cfg(target_os = "macos")]
+                        set_activation_policy(app, true);
+                        let _ = window.show();
+                        let _ = window.set_focus();
                         let _ = window.emit("toggle-virtual-disk", ());
                     }
                 }

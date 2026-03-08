@@ -35,15 +35,24 @@ class Folder(Base, UUIDMixin, TimestampMixin):
     destroyed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    is_trashed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    trashed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    original_folder_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("axshare.folders.id"), nullable=True
+    )
     color: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, default="yellow")
 
     owner: Mapped["User"] = relationship("User", back_populates="owned_folders")
-    files: Mapped[list["File"]] = relationship("File", back_populates="folder")
+    files: Mapped[list["File"]] = relationship(
+        "File", back_populates="folder", foreign_keys="File.folder_id"
+    )
     children: Mapped[list["Folder"]] = relationship(
-        "Folder", back_populates="parent"
+        "Folder", back_populates="parent", foreign_keys="[Folder.parent_id]"
     )
     parent: Mapped[Optional["Folder"]] = relationship(
-        "Folder", back_populates="children", remote_side="Folder.id"
+        "Folder", back_populates="children", foreign_keys="[Folder.parent_id]", remote_side="[Folder.id]"
     )
     permissions: Mapped[list["Permission"]] = relationship(
         "Permission", foreign_keys="Permission.resource_folder_id"
@@ -91,6 +100,13 @@ class File(Base, UUIDMixin, TimestampMixin):
     destroyed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    is_trashed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    trashed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    original_folder_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("axshare.folders.id"), nullable=True
+    )
     self_destruct_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -128,7 +144,7 @@ class File(Base, UUIDMixin, TimestampMixin):
         "User", back_populates="owned_files", foreign_keys=[owner_id]
     )
     folder: Mapped[Optional["Folder"]] = relationship(
-        "Folder", back_populates="files"
+        "Folder", back_populates="files", foreign_keys=[folder_id]
     )
     permissions: Mapped[list["Permission"]] = relationship(
         "Permission", foreign_keys="Permission.resource_file_id"

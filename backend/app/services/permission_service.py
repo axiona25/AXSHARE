@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, and_
+from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.file import File, Folder
@@ -166,8 +167,12 @@ class PermissionService:
         if resource_folder_id:
             conditions.append(Permission.resource_folder_id == resource_folder_id)
 
-        result = await db.execute(select(Permission).where(and_(*conditions)))
-        return list(result.scalars().all())
+        result = await db.execute(
+            select(Permission)
+            .options(joinedload(Permission.subject_user))
+            .where(and_(*conditions))
+        )
+        return list(result.unique().scalars().all())
 
     @staticmethod
     async def check_permission(

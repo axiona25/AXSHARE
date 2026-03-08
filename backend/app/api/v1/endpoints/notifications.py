@@ -3,7 +3,7 @@
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,3 +53,15 @@ async def mark_notifications_read(
     ids = body.notification_ids if body else None
     await NotificationService.mark_read(db, current_user.id, ids)
     return {"message": "Notifiche segnate come lette"}
+
+
+@router.delete("/{notification_id}", status_code=204)
+async def delete_notification(
+    notification_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Elimina una notifica (solo se appartiene all'utente)."""
+    deleted = await NotificationService.delete_one(db, current_user.id, notification_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Notifica non trovata")

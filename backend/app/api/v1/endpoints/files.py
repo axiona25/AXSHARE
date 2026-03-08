@@ -24,7 +24,9 @@ from app.models.permission import Permission, PermissionLevel
 from app.models.user import User
 from app.core.audit_actions import AuditAction
 from app.core.metrics import file_uploads_total
+from app.services.activity_service import log_activity
 from app.services.audit_service import AuditService
+from app.services.notification_service import NotificationService
 from app.services.destruct_service import DestructService
 from app.services.group_share_service import GroupShareService
 from app.services.storage import get_storage_service
@@ -196,6 +198,7 @@ async def upload_file(
         request=request,
     )
     file_uploads_total.labels(outcome="success").inc()
+    await log_activity(db, current_user.id, "upload", "file", file_record.id, target_name=meta.name_encrypted)
     return {"file_id": str(file_id), "storage_path": object_name}
 
 
@@ -324,6 +327,7 @@ async def move_file(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
+    await log_activity(db, current_user.id, "move", "file", file_id, target_name=str(file.id))
     return {"moved": True, "folder_id": str(folder_uuid) if folder_uuid else None}
 
 
@@ -368,6 +372,7 @@ async def download_file(
         resource_id=str(file_id),
         request=request,
     )
+    await log_activity(db, current_user.id, "download", "file", file_id, target_name=file.name_encrypted)
     return StreamingResponse(
         io.BytesIO(encrypted_data),
         media_type="application/octet-stream",
@@ -711,6 +716,20 @@ async def share_file_with_group(
         level=request.level,
         expires_at=request.expires_at,
     )
+    await log_activity(
+        db, current_user.id, "share", "file", file_id,
+        detail="Condiviso con gruppo",
+    )
+    await NotificationService.create_notification(
+        db=db,
+        user_id=current_user.id,
+        type="file_shared",
+        title="File condiviso",
+        body="File condiviso con un gruppo",
+        resource_type="file",
+        resource_id=str(file_id),
+        severity="info",
+    )
     return {"shared_with": len(permissions), "group_id": str(request.group_id)}
 
 
@@ -790,6 +809,7 @@ async def manual_destroy(
             details={"reason": "manual"},
             request=request,
         )
+        await log_activity(db, current_user.id, "delete", "file", file_id)
     return {"destroyed": destroyed, "file_id": str(file_id)}
 
 
@@ -804,4 +824,9 @@ async def revoke_group_access(
     revoked = await GroupShareService.revoke_group_access(
         db, current_user, file_id, group_id
     )
+    if revoked:
+        await log_activity(
+            db, current_user.id, "share_revoke", "file", file_id,
+            detail="Accesso gruppo rimosso",
+        )
     return {"revoked": revoked}

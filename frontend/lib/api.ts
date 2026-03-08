@@ -19,6 +19,7 @@ import {
   clearTokensSecure,
 } from '@/lib/auth'
 import type {
+  ActivityLog,
   ApiError,
   AuthTokens,
   FileItem,
@@ -161,10 +162,16 @@ export const authApi = {
       password,
     }),
 
-  devRegister: (email: string, password: string) =>
+  /** Verifica se l'email è già registrata (solo dev). available: true = libera. */
+  checkEmailAvailable: (email: string) =>
+    apiClient.get<{ available: boolean }>('/auth/email-available', {
+      params: { email: email.trim() },
+    }),
+
+  devRegister: (email: string, password: string, displayName?: string) =>
     apiClient.post<{ access_token: string; refresh_token?: string; user_id?: string }>(
       '/auth/register',
-      { email, password }
+      { email, password, ...(displayName != null && displayName !== '' && { display_name: displayName.trim() }) }
     ),
 
   webauthnRegisterBegin: (email: string, displayName?: string) =>
@@ -258,6 +265,7 @@ export interface ShareLinkData {
   file_id: string
   token: string
   is_password_protected: boolean
+  require_recipient_pin?: boolean
   expires_at: string | null
   max_downloads: number | null
   download_count: number
@@ -270,6 +278,7 @@ export interface ShareLinkData {
 export interface PublicShareInfo {
   token: string
   is_password_protected: boolean
+  require_recipient_pin?: boolean
   expires_at: string | null
   max_downloads: number | null
   download_count: number
@@ -282,6 +291,7 @@ export const shareLinksApi = {
     payload: {
       file_key_encrypted_for_link?: string
       password?: string
+      require_recipient_pin?: boolean
       expires_at?: string
       max_downloads?: number
       label?: string
@@ -305,6 +315,48 @@ export const shareLinksApi = {
       size_bytes: number
       download_count: number
     }>(`/public/share/${token}/download`, { password }),
+
+  /** Stream file cifrato (bytes). Header X-Link-Password se il link è protetto. */
+  getStream: (token: string, password?: string) =>
+    apiClient.get<ArrayBuffer>(`/public/share/${token}/stream`, {
+      responseType: 'arraybuffer',
+      headers: password != null ? { 'X-Link-Password': password } : undefined,
+    }),
+}
+
+// ─── Trash API ─────────────────────────────────────────────────────────────────
+
+export const trashApi = {
+  list: () =>
+    apiClient.get<{
+      files: Array<{ id: string; name_encrypted: string; size_bytes?: number; trashed_at: string | null; original_folder_id: string | null; type: 'file' }>;
+      folders: Array<{ id: string; name_encrypted: string; trashed_at: string | null; original_folder_id: string | null; type: 'folder' }>;
+    }>('/trash'),
+
+  trashFile: (fileId: string) =>
+    apiClient.post<{ trashed: boolean }>(`/trash/file/${fileId}`),
+
+  trashFolder: (folderId: string) =>
+    apiClient.post<{ trashed: boolean }>(`/trash/folder/${folderId}`),
+
+  restoreFile: (fileId: string) =>
+    apiClient.post<{ restored: boolean; folder_id: string | null }>(
+      `/trash/restore/file/${fileId}`
+    ),
+
+  restoreFolder: (folderId: string) =>
+    apiClient.post<{ restored: boolean }>(
+      `/trash/restore/folder/${folderId}`
+    ),
+
+  destroyFile: (fileId: string) =>
+    apiClient.delete<{ destroyed: boolean }>(`/trash/file/${fileId}`),
+
+  destroyFolder: (folderId: string) =>
+    apiClient.delete<{ destroyed: boolean }>(`/trash/folder/${folderId}`),
+
+  emptyTrash: () =>
+    apiClient.delete<{ emptied: boolean; destroyed_count: number }>('/trash/empty'),
 }
 
 // ─── Guest Sessions API (TASK 10.2) ───────────────────────────────────────────
@@ -497,11 +549,39 @@ export const foldersApi = {
   listChildren: (folderId: string) =>
     apiClient.get<Folder[]>(`/folders/${folderId}/children`),
 
+  /** Dimensione e numero file per una cartella (per card In Evidenza). */
+  getStats: (folderId: string) =>
+    apiClient.get<{ total_size_bytes: number; file_count: number }>(
+      `/folders/${folderId}/stats`
+    ),
+
   listFiles: (folderId: string) =>
     apiClient.get<FileItem[]>(`/folders/${folderId}/files`),
 
   listRootFiles: () =>
     apiClient.get<RootFileItem[]>(`/folders/root/files`),
+}
+
+// ─── Activity API ────────────────────────────────────────────────────────────
+// Accetta 404 (es. route non disponibile o tabella assente) come lista vuota per evitare errori in console.
+const activityConfig = { validateStatus: (status: number) => status === 200 || status === 404 }
+
+export const activityApi = {
+  getFileActivity: (fileId: string, options?: { cacheBust?: boolean }) =>
+    apiClient
+      .get<ActivityLog[]>(`/activity/file/${fileId}`, {
+        ...activityConfig,
+        params: options?.cacheBust ? { _: Date.now() } : undefined,
+      })
+      .then((res) => (res.status === 404 ? { ...res, data: [] as ActivityLog[] } : res)),
+
+  getFolderActivity: (folderId: string) =>
+    apiClient
+      .get<ActivityLog[]>(`/activity/folder/${folderId}`, activityConfig)
+      .then((res) => (res.status === 404 ? { ...res, data: [] as ActivityLog[] } : res)),
+
+  getRecent: () =>
+    apiClient.get<ActivityLog[]>('/activity/recent'),
 }
 
 // ─── Permissions API ─────────────────────────────────────────────────────────
@@ -521,6 +601,9 @@ export const permissionsApi = {
 
   listForFile: (fileId: string) =>
     apiClient.get<Permission[]>(`/permissions/file/${fileId}`),
+
+  listForFolder: (folderId: string) =>
+    apiClient.get<Permission[]>(`/permissions/folder/${folderId}`),
 
   listExpiringSoon: (hours = 24) =>
     apiClient.get<Permission[]>(
@@ -724,6 +807,9 @@ export const notificationsApi = {
 
   markRead: (ids?: string[]) =>
     apiClient.post('/notifications/read', ids ? { notification_ids: ids } : {}),
+
+  delete: (notificationId: string) =>
+    apiClient.delete(`/notifications/${notificationId}`),
 }
 
 export interface NotificationItem {

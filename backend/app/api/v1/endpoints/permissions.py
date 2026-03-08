@@ -42,6 +42,13 @@ class PermissionResponse(BaseModel):
     granted_by_id: UUID
 
 
+class PermissionListResponse(PermissionResponse):
+    """Come PermissionResponse con email e display name del destinatario per avatar/UI."""
+
+    subject_user_email: Optional[str] = None
+    subject_user_display_name: Optional[str] = None
+
+
 @router.post("/", response_model=PermissionResponse, status_code=201)
 async def grant_permission(
     request: GrantPermissionRequest,
@@ -88,28 +95,46 @@ async def revoke_permission(
     await PermissionService.revoke_permission(db, current_user, permission_id)
 
 
-@router.get("/file/{file_id}", response_model=list[PermissionResponse])
+def _permission_to_list_response(perm: Permission) -> dict:
+    """Costruisce PermissionListResponse da Permission con subject_user caricato."""
+    return {
+        "id": perm.id,
+        "subject_user_id": perm.subject_user_id,
+        "resource_file_id": perm.resource_file_id,
+        "resource_folder_id": perm.resource_folder_id,
+        "level": perm.level,
+        "expires_at": perm.expires_at,
+        "is_active": perm.is_active,
+        "granted_by_id": perm.granted_by_id,
+        "subject_user_email": perm.subject_user.email if perm.subject_user else None,
+        "subject_user_display_name": perm.subject_user.display_name_encrypted if perm.subject_user else None,
+    }
+
+
+@router.get("/file/{file_id}", response_model=list[PermissionListResponse])
 async def list_file_permissions(
     file_id: UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lista permessi su un file."""
-    return await PermissionService.list_permissions(
+    """Lista permessi su un file (con email destinatario per UI)."""
+    perms = await PermissionService.list_permissions(
         db, current_user, resource_file_id=file_id
     )
+    return [_permission_to_list_response(p) for p in perms]
 
 
-@router.get("/folder/{folder_id}", response_model=list[PermissionResponse])
+@router.get("/folder/{folder_id}", response_model=list[PermissionListResponse])
 async def list_folder_permissions(
     folder_id: UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lista permessi su una cartella."""
-    return await PermissionService.list_permissions(
+    """Lista permessi su una cartella (con email destinatario per UI)."""
+    perms = await PermissionService.list_permissions(
         db, current_user, resource_folder_id=folder_id
     )
+    return [_permission_to_list_response(p) for p in perms]
 
 
 @router.get("/expiring-soon", response_model=list[PermissionResponse])

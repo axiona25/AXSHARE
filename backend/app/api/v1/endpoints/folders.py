@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.file import File, Folder
+from app.services.activity_service import log_activity
 from app.models.user import User
 
 router = APIRouter(prefix="/folders", tags=["folders"])
@@ -39,6 +40,7 @@ async def create_folder(
     db.add(folder)
     await db.commit()
     await db.refresh(folder)
+    await log_activity(db, current_user.id, "create_folder", "folder", folder.id)
     return {"folder_id": str(folder.id)}
 
 
@@ -77,6 +79,7 @@ async def delete_folder(
         raise HTTPException(status_code=404, detail="Cartella non trovata")
     await db.delete(folder)
     await db.commit()
+    await log_activity(db, current_user.id, "delete", "folder", folder_id)
     return {"deleted": True}
 
 
@@ -94,6 +97,26 @@ async def _folder_is_descendant(db: AsyncSession, folder_id: uuid.UUID, ancestor
     return False
 
 
+async def _get_descendant_folder_ids(
+    db: AsyncSession, root_id: uuid.UUID, owner_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Restituisce root_id + tutti gli ID delle cartelle discendenti (stesso owner)."""
+    out: list[uuid.UUID] = [root_id]
+    frontier = [root_id]
+    while frontier:
+        result = await db.execute(
+            select(Folder.id).where(
+                Folder.parent_id.in_(frontier),
+                Folder.owner_id == owner_id,
+                Folder.is_destroyed.is_(False),
+            )
+        )
+        next_ids = [r[0] for r in result.all()]
+        frontier = next_ids
+        out.extend(next_ids)
+    return out
+
+
 @router.patch("/{folder_id}")
 async def update_folder(
     folder_id: uuid.UUID,
@@ -107,8 +130,10 @@ async def update_folder(
     folder = result.scalar_one_or_none()
     if not folder:
         raise HTTPException(status_code=404, detail="Cartella non trovata")
+    action = None
     if "name_encrypted" in payload:
         folder.name_encrypted = payload["name_encrypted"]
+        action = "rename"
     if "folder_key_encrypted" in payload:
         folder.folder_key_encrypted = payload["folder_key_encrypted"]
     if "color" in payload:
@@ -136,8 +161,11 @@ async def update_folder(
             if await _folder_is_descendant(db, parent_uuid, folder_id):
                 raise HTTPException(status_code=400, detail="Non puoi spostare una cartella in una sua sottocartella")
             folder.parent_id = parent_uuid
+        action = "move"
     await db.commit()
     await db.refresh(folder)
+    if action:
+        await log_activity(db, current_user.id, action, "folder", folder_id)
     return {"updated": True}
 
 
@@ -152,8 +180,14 @@ async def list_root_folders(
         .correlate(Folder)
         .scalar_subquery()
     )
+    count_subq = (
+        select(func.count(File.id))
+        .where(File.folder_id == Folder.id, File.is_destroyed.is_(False))
+        .correlate(Folder)
+        .scalar_subquery()
+    )
     result = await db.execute(
-        select(Folder, size_subq.label("total_size_bytes")).where(
+        select(Folder, size_subq.label("total_size_bytes"), count_subq.label("file_count")).where(
             Folder.owner_id == current_user.id,
             Folder.parent_id.is_(None),
             Folder.is_destroyed.is_(False),
@@ -167,6 +201,7 @@ async def list_root_folders(
             "created_at": r[0].created_at.isoformat() if r[0].created_at else None,
             "updated_at": r[0].updated_at.isoformat() if r[0].updated_at else None,
             "total_size_bytes": int(r[1]) if r[1] is not None else 0,
+            "file_count": int(r[2]) if r[2] is not None else 0,
             "color": r[0].color,
         }
         for r in rows
@@ -218,8 +253,14 @@ async def list_children(
         .correlate(Folder)
         .scalar_subquery()
     )
+    count_subq = (
+        select(func.count(File.id))
+        .where(File.folder_id == Folder.id, File.is_destroyed.is_(False))
+        .correlate(Folder)
+        .scalar_subquery()
+    )
     result = await db.execute(
-        select(Folder, size_subq.label("total_size_bytes")).where(
+        select(Folder, size_subq.label("total_size_bytes"), count_subq.label("file_count")).where(
             Folder.parent_id == folder_id,
             Folder.is_destroyed.is_(False),
         )
@@ -232,10 +273,39 @@ async def list_children(
             "created_at": r[0].created_at.isoformat() if r[0].created_at else None,
             "updated_at": r[0].updated_at.isoformat() if r[0].updated_at else None,
             "total_size_bytes": int(r[1]) if r[1] is not None else 0,
+            "file_count": int(r[2]) if r[2] is not None else 0,
             "color": r[0].color,
         }
         for r in rows
     ]
+
+
+@router.get("/{folder_id}/stats")
+async def get_folder_stats(
+    folder_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restituisce total_size_bytes e file_count per una cartella (inclusi file nelle sottocartelle)."""
+    folder = await db.get(Folder, folder_id)
+    if folder is None or folder.owner_id != current_user.id or folder.is_destroyed:
+        raise HTTPException(status_code=404, detail="Cartella non trovata")
+    folder_ids = await _get_descendant_folder_ids(db, folder_id, folder.owner_id)
+    size_result = await db.execute(
+        select(func.coalesce(func.sum(File.size_bytes), 0)).where(
+            File.folder_id.in_(folder_ids),
+            File.is_destroyed.is_(False),
+        )
+    )
+    count_result = await db.execute(
+        select(func.count(File.id)).where(
+            File.folder_id.in_(folder_ids),
+            File.is_destroyed.is_(False),
+        )
+    )
+    total_size = int(size_result.scalar() or 0)
+    file_count = int(count_result.scalar() or 0)
+    return {"total_size_bytes": total_size, "file_count": file_count}
 
 
 @router.get("/{folder_id}/files")

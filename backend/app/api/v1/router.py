@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    activity,
     audit,
     auth,
     auth_webauthn,
@@ -18,6 +19,7 @@ from app.api.v1.endpoints import (
     search,
     share_links,
     signatures,
+    trash,
     users,
 )
 from app.api.v1.endpoints import test_seed
@@ -25,6 +27,7 @@ from app.api.v1.endpoints import test_seed
 api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(test_seed.router)
+api_router.include_router(activity.router)
 api_router.include_router(auth.router)
 api_router.include_router(auth_webauthn.router)
 api_router.include_router(users.router)
@@ -35,6 +38,7 @@ api_router.include_router(metadata.router)
 api_router.include_router(search.router)
 api_router.include_router(share_links.router)
 api_router.include_router(share_links.sync_router)
+api_router.include_router(trash.router)
 api_router.include_router(signatures.router)
 api_router.include_router(guest.router)
 api_router.include_router(guest.public_router)

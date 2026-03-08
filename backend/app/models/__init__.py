@@ -1,4 +1,5 @@
 from app.models.base import Base, UUIDMixin, TimestampMixin
+from app.models.activity import ActivityLog
 from app.models.user import User, UserRole
 from app.models.group import Group, GroupMember, GroupRole
 from app.models.file import File, FileVersion, Folder
@@ -16,6 +17,7 @@ __all__ = [
     "Base",
     "UUIDMixin",
     "TimestampMixin",
+    "ActivityLog",
     "User",
     "UserRole",
     "Group",

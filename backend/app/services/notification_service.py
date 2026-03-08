@@ -40,6 +40,30 @@ class NotificationService:
         return notif
 
     @staticmethod
+    async def create_notification(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        type: str,
+        title: str,
+        body: Optional[str] = None,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        action_url: Optional[str] = None,
+        severity: str = "info",
+    ) -> None:
+        await NotificationService.create(
+            db=db,
+            user_id=user_id,
+            type=type,
+            title=title,
+            body=body,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            action_url=action_url,
+            severity=severity,
+        )
+
+    @staticmethod
     async def notify_permission_expiring(
         db: AsyncSession,
         user_id: uuid.UUID,
@@ -207,3 +231,23 @@ class NotificationService:
             stmt = stmt.where(Notification.id.in_(notification_ids))
         await db.execute(stmt)
         await db.commit()
+
+    @staticmethod
+    async def delete_one(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        notification_id: uuid.UUID,
+    ) -> bool:
+        """Elimina una notifica (solo se appartiene all'utente). Restituisce True se eliminata."""
+        result = await db.execute(
+            select(Notification).where(
+                Notification.id == notification_id,
+                Notification.user_id == user_id,
+            )
+        )
+        notif = result.scalar_one_or_none()
+        if not notif:
+            return False
+        await db.delete(notif)
+        await db.commit()
+        return True

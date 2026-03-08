@@ -8,6 +8,7 @@ const PUBLIC_ROUTES = [
   '/share',
   '/invite',
   '/guest',
+  '/desktop',
 ]
 
 export function middleware(request: NextRequest) {

@@ -39,6 +39,17 @@ export interface RootFileItem {
   updated_at: string | null
 }
 
+export interface ActivityLog {
+  id: string
+  user_id: string
+  action: string
+  target_type: 'file' | 'folder'
+  target_id: string
+  target_name?: string | null
+  detail?: string | null
+  created_at: string
+}
+
 export interface Folder {
   id: string
   name_encrypted: string
@@ -48,6 +59,7 @@ export interface Folder {
   created_at: string
   updated_at?: string | null
   total_size_bytes?: number
+  file_count?: number
   color?: string | null
 }
 
@@ -61,6 +73,10 @@ export interface Permission {
   is_active: boolean
   granted_by_id: string
   resource_key_encrypted: string | null
+  /** Presente in lista permessi: email del destinatario per avatar/UI. */
+  subject_user_email?: string | null
+  /** Presente in lista permessi: nome e cognome del destinatario per avatar/UI. */
+  subject_user_display_name?: string | null
 }
 
 export interface Group {

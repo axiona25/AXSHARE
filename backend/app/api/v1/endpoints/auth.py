@@ -1,6 +1,6 @@
 """Auth endpoints — TOTP setup/verify, JWT refresh, dev-only register/login."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class DevRegisterBody(BaseModel):
     email: str
     password: str
+    display_name: str | None = None  # Nome e cognome (es. "Raffaele Amoroso")
 
 
 class DevLoginBody(BaseModel):
@@ -45,6 +46,21 @@ def _dev_only():
         raise HTTPException(status_code=404, detail="Not Found")
 
 
+@router.get("/email-available")
+async def check_email_available(
+    email: str = Query(..., min_length=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Verifica se l'email è già registrata (solo development).
+    Restituisce { "available": true } se libera, { "available": false } se già usata.
+    """
+    _dev_only()
+    result = await db.execute(select(User).where(User.email == email.strip()))
+    exists = result.scalar_one_or_none() is not None
+    return {"available": not exists}
+
+
 @router.post("/register")
 async def dev_register(body: DevRegisterBody, db: AsyncSession = Depends(get_db)):
     """
@@ -57,9 +73,10 @@ async def dev_register(body: DevRegisterBody, db: AsyncSession = Depends(get_db)
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email già registrata")
+    display_name = (body.display_name or "").strip() or body.email.split("@")[0]
     user = User(
         email=body.email,
-        display_name_encrypted=body.email.split("@")[0],
+        display_name_encrypted=display_name,
         role=UserRole.USER,
         is_active=True,
     )
