@@ -48,6 +48,7 @@ export interface Folder {
   created_at: string
   updated_at?: string | null
   total_size_bytes?: number
+  color?: string | null
 }
 
 export interface Permission {

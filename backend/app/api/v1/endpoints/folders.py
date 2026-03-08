@@ -111,6 +111,8 @@ async def update_folder(
         folder.name_encrypted = payload["name_encrypted"]
     if "folder_key_encrypted" in payload:
         folder.folder_key_encrypted = payload["folder_key_encrypted"]
+    if "color" in payload:
+        folder.color = payload["color"]
     if "parent_id" in payload:
         new_parent = payload["parent_id"]
         if new_parent is None or new_parent == "":
@@ -165,6 +167,7 @@ async def list_root_folders(
             "created_at": r[0].created_at.isoformat() if r[0].created_at else None,
             "updated_at": r[0].updated_at.isoformat() if r[0].updated_at else None,
             "total_size_bytes": int(r[1]) if r[1] is not None else 0,
+            "color": r[0].color,
         }
         for r in rows
     ]
@@ -229,6 +232,7 @@ async def list_children(
             "created_at": r[0].created_at.isoformat() if r[0].created_at else None,
             "updated_at": r[0].updated_at.isoformat() if r[0].updated_at else None,
             "total_size_bytes": int(r[1]) if r[1] is not None else 0,
+            "color": r[0].color,
         }
         for r in rows
     ]

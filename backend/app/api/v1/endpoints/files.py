@@ -54,6 +54,12 @@ class MoveFileRequest(BaseModel):
     folder_id: Optional[str] = None  # null = root
 
 
+class RenameFileRequest(BaseModel):
+    """Body per rinominare un file (nome già cifrato lato client)."""
+
+    name_encrypted: str
+
+
 class FileUploadMetadata(BaseModel):
     """Metadati upload: nome/MIME/chiave già cifrati lato client."""
 
@@ -254,6 +260,32 @@ async def _get_file_with_write_permission(
     if perm is None or not _has_write_permission(file, current_user, perm):
         raise HTTPException(status_code=403, detail="Permesso di scrittura negato")
     return file
+
+
+@router.patch("/{file_id}/name")
+async def rename_file(
+    file_id: uuid.UUID,
+    body: RenameFileRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggiorna il nome del file (name_encrypted già cifrato lato client)."""
+    file = await _get_file_with_write_permission(file_id, current_user, db)
+    if file.is_destroyed:
+        raise HTTPException(status_code=410, detail="File eliminato")
+    if not body.name_encrypted or not body.name_encrypted.strip():
+        raise HTTPException(status_code=400, detail="Nome obbligatorio")
+    file.name_encrypted = body.name_encrypted.strip()
+    await db.commit()
+    await event_bus.publish(
+        str(current_user.id),
+        {
+            "type": "file_updated",
+            "file_id": str(file_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return {"renamed": True, "file_id": str(file_id)}
 
 
 @router.patch("/{file_id}")

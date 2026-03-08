@@ -14,7 +14,7 @@ import { useSubmitLock, useUploadQueue } from '@/hooks/useRateLimit'
 import { useMyDashboard } from '@/hooks/useReports'
 import { useThumbnail } from '@/hooks/useThumbnail'
 import { searchApi, foldersApi, filesApi } from '@/lib/api'
-import { getFileIcon, getFileLabel, getAxsFileIcon, getFolderIcon, getFolderIconByIndex, FOLDER_ICON_OPTIONS } from '@/lib/fileIcons'
+import { getFileIcon, getFileLabel, getAxsFileIcon, getFolderIcon, getFolderIconByIndex, getFolderColorIcon, FOLDER_ICON_OPTIONS } from '@/lib/fileIcons'
 import { OnboardingBanner } from '@/components/OnboardingBanner'
 import ConfirmModal from '@/components/ConfirmModal'
 import { VersionHistory } from '@/components/VersionHistory'
@@ -157,9 +157,9 @@ export default function DashboardPage() {
 
   const { files, isLoading: filesLoading, error: filesError, revalidate: reloadFiles } = useFiles(currentFolderId)
   const { folders, isLoading: foldersLoading, error: foldersError, revalidate: reloadFolders } = useFolders(currentFolderId)
-  const { deleteFile, deleteFolder, createFolder, renameFolder, moveFile, moveFolder } = useFileMutations()
+  const { deleteFile, deleteFolder, createFolder, renameFolder, renameFile, moveFile, moveFolder } = useFileMutations()
   const { user, hasSessionKey, sessionPrivateKey, logout } = useAuthContext()
-  const { uploadFile, uploadNewVersion, downloadAndDecrypt, decryptFileNames, decryptFolderNames, decryptFileNamesAndKeys, isLoading: cryptoLoading, error: cryptoError, clearError: clearCryptoError } = useCrypto()
+  const { uploadFile, uploadNewVersion, downloadAndDecrypt, decryptFileNames, decryptFolderNames, decryptFileNamesAndKeys, encryptFileNameForRename, isLoading: cryptoLoading, error: cryptoError, clearError: clearCryptoError } = useCrypto()
   const { lock: lockUpload, isLocked: uploadLocked } = useSubmitLock(1500)
   const { startUpload, activeUploads, canUpload } = useUploadQueue()
   const { dashboard: storageDashboard, refresh: refreshStorageDashboard } = useMyDashboard()
@@ -175,12 +175,14 @@ export default function DashboardPage() {
   const [uploadStatus, setUploadStatus] = useState('')
   const [showCreateFolderModal, setShowCreateFolderModal] = useState(false)
   const [createFolderModalName, setCreateFolderModalName] = useState('')
-  const [createFolderModalColor, setCreateFolderModalColor] = useState<1 | 2 | 3 | 4 | 5 | 6>(1)
+  const [createFolderModalColor, setCreateFolderModalColor] = useState<number>(1)
 
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({})
   const [decryptedFolderNames, setDecryptedFolderNames] = useState<Record<string, string>>({})
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
   const [renamingFolderValue, setRenamingFolderValue] = useState('')
+  const [renamingFileId, setRenamingFileId] = useState<string | null>(null)
+  const [renamingFileName, setRenamingFileName] = useState('')
 
   const [openingFileId, setOpeningFileId] = useState<string | null>(null)
   /** 'open' = apertura file, 'download' = scarica da menu contestuale; usato per il testo di loading in tabella */
@@ -270,20 +272,20 @@ export default function DashboardPage() {
     })
   }, [])
   const FOLDER_ICON_PREF_KEY = 'ax-folder-icon-pref'
-  const [folderIconPref, setFolderIconPref] = useState<Record<string, 1 | 2 | 3 | 4 | 5 | 6>>(() => {
+  const [folderIconPref, setFolderIconPref] = useState<Record<string, number>>(() => {
     if (typeof window === 'undefined') return {}
     try {
       const raw = window.localStorage.getItem(FOLDER_ICON_PREF_KEY)
       if (!raw) return {}
       const parsed = JSON.parse(raw) as Record<string, number>
-      const out: Record<string, 1 | 2 | 3 | 4 | 5 | 6> = {}
+      const out: Record<string, number> = {}
       for (const [id, v] of Object.entries(parsed)) {
-        if (v >= 1 && v <= 6) out[id] = v as 1 | 2 | 3 | 4 | 5 | 6
+        if (v >= 1 && v <= 10) out[id] = v
       }
       return out
     } catch { return {} }
   })
-  const setFolderIcon = (folderId: string, index: 1 | 2 | 3 | 4 | 5 | 6) => {
+  const setFolderIcon = (folderId: string, index: number) => {
     setFolderIconPref((prev) => {
       const next = { ...prev, [folderId]: index }
       try { window.localStorage.setItem(FOLDER_ICON_PREF_KEY, JSON.stringify(next)) } catch { /* ignore */ }
@@ -1179,8 +1181,15 @@ export default function DashboardPage() {
       if (!publicKeyPem) throw new Error('Chiave pubblica non trovata')
       const folderKeyEncrypted = await encryptFileKeyWithRSA(folderKey, publicKeyPem)
       await renameFolder(folderId, nameEncrypted, folderKeyEncrypted, currentFolderId ?? undefined)
-      setDecryptedFolderNames((prev) => ({ ...prev, [folderId]: newName.trim() }))
+      const trimmed = newName.trim()
+      setDecryptedFolderNames((prev) => ({ ...prev, [folderId]: trimmed }))
       setRenamingFolderId(null)
+      setRenamingFolderValue('')
+      setInEvidenza((prev) => {
+        const next = prev.map((i) => (i.id === folderId && i.type === 'folder' ? { ...i, name: trimmed } : i))
+        try { window.localStorage.setItem(IN_EVIDENZA_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+        return next
+      })
       reloadFolders()
       showToast('Cartella rinominata')
     } catch {
@@ -1553,19 +1562,31 @@ export default function DashboardPage() {
                           const f = folders.find((x) => x.id === item.id)
                           if (f) openFolder(f)
                           else openFolderById(item.id, item.name)
-                        }
-                      }}
-                      onDoubleClick={() => {
-                        if (isFolder) {
-                          const f = folders.find((x) => x.id === item.id)
-                          if (f) openFolder(f)
-                          else openFolderById(item.id, item.name)
                         } else {
-                          const file = files.find((x) => x.id === item.id)
-                          if (file) handleOpen(file)
+                          const file = files.find((x) => x.id === item.id) as FileItem | undefined
+                          if (file) {
+                            handleOpen(file)
+                          } else {
+                            const synthetic: FileItem = {
+                              id: item.id,
+                              name_encrypted: item.name,
+                              mime_type_encrypted: '',
+                              size_bytes: item.size_bytes ?? 0,
+                              owner_id: '',
+                              folder_id: null,
+                              current_version: 1,
+                              download_count: 0,
+                              is_destroyed: false,
+                              self_destruct_after_downloads: null,
+                              self_destruct_at: null,
+                              created_at: item.created_at ?? '',
+                              updated_at: '',
+                            }
+                            handleOpen(synthetic)
+                          }
                         }
                       }}
-                      style={{ position: 'relative', cursor: isFolder ? 'pointer' : undefined }}
+                      style={{ position: 'relative', cursor: 'pointer' }}
                     >
                       <button
                         type="button"
@@ -1577,8 +1598,8 @@ export default function DashboardPage() {
                       </button>
                       {isFolder ? (
                         <>
-                          <div className="folder-icon-img-wrap">
-                            <Image src={getFolderIconByIndex(folderIconPref[item.id] ?? item.folderIconIndex ?? 1)} alt={item.name} width={56} height={48} style={{ objectFit: 'contain' }} />
+                          <div className="folder-icon-img-wrap folder-icon-img-wrap-card-folder">
+                            <Image src={getFolderColorIcon((item as { color?: string }).color ?? (['yellow', 'gray', 'teal', 'blue', 'purple', 'green', 'orange', 'red', 'pink', 'indigo'] as const)[Math.min((folderIconPref[item.id] ?? item.folderIconIndex ?? 1) - 1, 9)] ?? 'yellow', isRunningInTauri())} alt={item.name} width={68} height={58} style={{ objectFit: 'contain' }} />
                           </div>
                           <div className="folder-name">{item.name}</div>
                           <div className="folder-meta">Cartella</div>
@@ -1778,7 +1799,7 @@ export default function DashboardPage() {
                         key={`folder-${folder.id}`}
                         className="file-table-row-folder"
                         style={{ cursor: 'pointer', background: folderChecked ? 'rgba(50,153,243,0.06)' : undefined }}
-                        onClick={() => openFolder(folder)}
+                        onClick={() => { if (!isRenaming) openFolder(folder) }}
                         onContextMenu={(e) => {
                           e.preventDefault()
                           setContextMenu({ x: e.clientX, y: e.clientY, type: 'folder', id: folder.id, name: folderName })
@@ -1820,17 +1841,29 @@ export default function DashboardPage() {
                         </td>
                         <td>
                           <div className="file-name-cell">
-                            <Image src={getFolderIconByIndex(folderIconPref[folder.id] ?? 1)} alt={folderName} width={24} height={20} style={{ objectFit: 'contain', marginRight: 8 }} />
+                            <div className="file-type-icon-wrap">
+                              <Image src={getFolderColorIcon(folder.color ?? 'yellow', isRunningInTauri())} alt={folderName} width={44} height={44} className="file-type-icon" style={{ objectFit: 'contain', flexShrink: 0 }} />
+                            </div>
                             {isRenaming ? (
                               <input
-                                autoFocus
-                                defaultValue={folderName}
-                                style={{ fontSize: 13, border: '1px solid var(--ax-border)', borderRadius: 4, padding: '2px 6px' }}
-                                onBlur={(e) => handleRenameFolder(folder.id, e.target.value)}
+                                type="text"
+                                className="file-name-inline-edit"
+                                value={renamingFolderValue}
+                                onChange={(e) => setRenamingFolderValue(e.target.value)}
                                 onKeyDown={(e) => {
-                                  if (e.key === 'Enter') handleRenameFolder(folder.id, e.currentTarget.value)
-                                  if (e.key === 'Escape') setRenamingFolderId(null)
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault()
+                                    const val = renamingFolderValue.trim()
+                                    if (val) handleRenameFolder(folder.id, val)
+                                  } else if (e.key === 'Escape') {
+                                    e.preventDefault()
+                                    setRenamingFolderId(null)
+                                    setRenamingFolderValue('')
+                                  }
                                 }}
+                                onClick={(e) => e.stopPropagation()}
+                                autoFocus
+                                aria-label="Nuovo nome cartella"
                               />
                             ) : (
                               <span className="file-name">{folderName}</span>
@@ -1975,16 +2008,55 @@ export default function DashboardPage() {
                           <td>
                             <div className="file-name-cell">
                               <div className="file-type-icon-wrap">
-                                <Image src={displayName.endsWith('.axs') ? getAxsFileIcon(displayName) : getFileIcon(displayName, file.is_signed)} alt={getFileLabel(displayName)} width={44} height={44} className="file-type-icon" style={{ objectFit: 'contain', flexShrink: 0, opacity: openingFileId === file.id ? 0.5 : 1 }} unoptimized />
+                                <Image src={displayName.endsWith('.axs') ? getAxsFileIcon(displayName) : getFileIcon(displayName, file.is_signed)} alt={getFileLabel(displayName)} width={52} height={52} className="file-type-icon" style={{ objectFit: 'contain', flexShrink: 0, opacity: openingFileId === file.id ? 0.5 : 1 }} unoptimized />
                                 {openingFileId === file.id && (
                                   <span className="file-open-loader" aria-label={openingMode === 'download' ? 'Download in corso' : 'Apertura in corso'} />
                                 )}
                               </div>
-                              <span className="file-name" data-testid={`file-name-${file.id}`}>
-                                {displayName}
-                                {autoSaving[file.id] && <span style={{ color: 'var(--ax-success)', fontSize: 11, fontWeight: 600, marginLeft: 6 }}>💾 Salvataggio...</span>}
-                                {openingFileId === file.id && <span style={{ color: 'var(--ax-blue)', fontSize: 11, fontWeight: 600, marginLeft: 6 }}>{openingMode === 'download' ? 'Download in corso...' : 'Apertura in corso...'}</span>}
-                              </span>
+                              {renamingFileId === file.id ? (
+                                <input
+                                  type="text"
+                                  className="file-name-inline-edit"
+                                  value={renamingFileName}
+                                  onChange={(e) => setRenamingFileName(e.target.value)}
+                                  onKeyDown={async (e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      const trimmed = renamingFileName.trim()
+                                      if (!trimmed) { setRenamingFileId(null); setRenamingFileName(''); return }
+                                      const nameEncrypted = await encryptFileNameForRename(file.id, trimmed)
+                                      if (!nameEncrypted) { showToast('Errore durante la rinomina'); return }
+                                      try {
+                                        await renameFile(file.id, nameEncrypted, currentFolderId)
+                                        setDecryptedNames((prev) => ({ ...prev, [file.id]: trimmed }))
+                                        setRenamingFileId(null)
+                                        setRenamingFileName('')
+                                        setInEvidenza((prev) => {
+                                          const next = prev.map((i) => (i.id === file.id && i.type === 'file' ? { ...i, name: trimmed } : i))
+                                          try { window.localStorage.setItem(IN_EVIDENZA_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+                                          return next
+                                        })
+                                        showToast('File rinominato')
+                                      } catch {
+                                        showToast('Errore durante la rinomina')
+                                      }
+                                    } else if (e.key === 'Escape') {
+                                      e.preventDefault()
+                                      setRenamingFileId(null)
+                                      setRenamingFileName('')
+                                    }
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  autoFocus
+                                  aria-label="Nuovo nome file"
+                                />
+                              ) : (
+                                <span className="file-name" data-testid={`file-name-${file.id}`}>
+                                  {displayName}
+                                  {autoSaving[file.id] && <span style={{ color: 'var(--ax-success)', fontSize: 11, fontWeight: 600, marginLeft: 6 }}>💾 Salvataggio...</span>}
+                                  {openingFileId === file.id && <span style={{ color: 'var(--ax-blue)', fontSize: 11, fontWeight: 600, marginLeft: 6 }}>{openingMode === 'download' ? 'Download in corso...' : 'Apertura in corso...'}</span>}
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="file-size-cell">
@@ -2164,7 +2236,7 @@ export default function DashboardPage() {
                     title={opt.label}
                     aria-pressed={createFolderModalColor === opt.index}
                   >
-                    <Image src={getFolderIconByIndex(opt.index)} alt={opt.label} width={40} height={36} style={{ objectFit: 'contain' }} />
+                    <Image src={getFolderColorIcon(opt.colorKey, isRunningInTauri())} alt={opt.label} width={40} height={36} style={{ objectFit: 'contain' }} unoptimized />
                   </button>
                 ))}
               </div>
@@ -2348,7 +2420,7 @@ export default function DashboardPage() {
                         onClick={() => handleMoveToDestination(folder.id)}
                         style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '10px 12px', border: 'none', borderRadius: 8, background: 'transparent', cursor: moveModalMoving ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ax-text)', textAlign: 'left' }}
                       >
-                        <Image src={getFolderIconByIndex(folderIconPref[folder.id] ?? 1)} alt="" width={20} height={18} style={{ objectFit: 'contain' }} />
+                        <Image src={getFolderColorIcon(folder.color ?? 'yellow', isRunningInTauri())} alt="" width={20} height={18} style={{ objectFit: 'contain' }} />
                         {folderName}
                       </button>
                     )
@@ -2624,7 +2696,15 @@ export default function DashboardPage() {
                   <button
                     key={opt.index}
                     type="button"
-                    onClick={() => { setFolderIcon(contextMenu.id, opt.index); showToast(`Icona ${opt.label}`); setContextMenu(null) }}
+                    onClick={async () => {
+                      setFolderIcon(contextMenu.id, opt.index);
+                      await foldersApi.patch(contextMenu.id, { color: opt.colorKey });
+                      console.log('[COLOR CHANGE] patch inviato, color:', opt.colorKey);
+                      await reloadFolders();
+                      console.log('[COLOR DEBUG] folders dopo reload:', JSON.stringify(folders?.map(f => ({ id: f.id, color: (f as any).color }))));
+                      showToast(`Colore ${opt.label}`);
+                      setContextMenu(null);
+                    }}
                     className="context-menu-icon-btn"
                     style={{
                       width: 36, height: 36, borderRadius: 8, border: `2px solid ${opt.color}`,
@@ -2633,7 +2713,7 @@ export default function DashboardPage() {
                     }}
                     title={opt.label}
                   >
-                    <Image src={getFolderIconByIndex(opt.index)} alt={opt.label} width={28} height={24} style={{ objectFit: 'contain', pointerEvents: 'none' }} />
+                    <Image src={getFolderColorIcon(opt.colorKey, isRunningInTauri())} alt={opt.label} width={28} height={24} style={{ objectFit: 'contain', pointerEvents: 'none' }} unoptimized />
                   </button>
                 ))}
               </div>
@@ -2702,8 +2782,15 @@ export default function DashboardPage() {
               ),
               label: 'Rinomina',
               action: () => {
-                setRenameModal({ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name })
-                setRenameModalValue(contextMenu.name)
+                if (contextMenu.type === 'file') {
+                  setRenamingFileId(contextMenu.id)
+                  setRenamingFileName(contextMenu.name)
+                  setContextMenu(null)
+                } else {
+                  setRenamingFolderId(contextMenu.id)
+                  setRenamingFolderValue(contextMenu.name)
+                  setContextMenu(null)
+                }
               },
             },
             {

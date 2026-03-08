@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 80" width="96" height="80">
+  <defs>
+    <linearGradient id="body_00897B" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#80CBC4" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#00897B" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="tab_00897B" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E0F2F1" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#80CBC4" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="shine_00897B" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="white" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="white" stop-opacity="0.0"/>
+    </linearGradient>
+    <linearGradient id="glow_00897B" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#004D40" stop-opacity="0.0"/>
+      <stop offset="100%" stop-color="#004D40" stop-opacity="0.35"/>
+    </linearGradient>
+  </defs>
+  <path d="M8 26 Q8 22 12 22 L38 22 Q41 22 42 25 L44 28 L84 28 Q88 28 88 32 L88 72 Q88 76 84 76 L12 76 Q8 76 8 72 Z" fill="#004D40" opacity="0.2" transform="translate(2,2)"/>
+  <path d="M8 26 Q8 22 12 22 L38 22 Q41 22 42 25 L44 28 L12 28 Q8 28 8 26 Z" fill="url(#tab_00897B)"/>
+  <path d="M8 28 L84 28 Q88 28 88 32 L88 72 Q88 76 84 76 L12 76 Q8 76 8 72 Z" fill="url(#body_00897B)"/>
+  <path d="M8 28 L84 28 Q88 28 88 32 L88 72 Q88 76 84 76 L12 76 Q8 76 8 72 Z" fill="none" stroke="#004D40" stroke-width="0.8" opacity="0.3"/>
+  <path d="M9 28 L83 28 Q87 28 87 32 L87 48 Q47 54 9 48 Z" fill="url(#shine_00897B)"/>
+  <path d="M8 58 Q48 54 88 58 L88 72 Q88 76 84 76 L12 76 Q8 76 8 72 Z" fill="url(#glow_00897B)"/>
+  <path d="M8 30 Q9 52 8 72" fill="none" stroke="white" stroke-width="1.5" opacity="0.3"/>
+  <circle cx="74" cy="58" r="11" fill="#004D40" opacity="0.85"/>
+  <rect x="69" y="58" width="10" height="8" rx="2" fill="white" opacity="0.95"/>
+  <path d="M70.5 58 Q70.5 53.5 74 53.5 Q77.5 53.5 77.5 58" fill="none" stroke="white" stroke-width="2"/>
+  <circle cx="74" cy="62.5" r="1.5" fill="#004D40"/>
+</svg>

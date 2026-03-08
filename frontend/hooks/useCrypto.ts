@@ -512,6 +512,29 @@ export function useCrypto(): UseCryptoReturn {
     [user, sessionPrivateKey]
   )
 
+  /** Cifra un nuovo nome file con la DEK del file (per rinomina). Restituisce name_encrypted in base64. */
+  const encryptFileNameForRename = useCallback(
+    async (fileId: string, newPlainName: string): Promise<string | null> => {
+      if (!user?.id || !sessionPrivateKey || !newPlainName.trim()) return null
+      try {
+        const keyResp = await filesApi.getKey(fileId)
+        const fileKey = await decryptFileKeyWithRSA(
+          keyResp.data.file_key_encrypted,
+          sessionPrivateKey
+        )
+        const nameEncrypted = await encryptFileChunked(
+          new TextEncoder().encode(newPlainName.trim()),
+          fileKey,
+          user.id
+        )
+        return bytesToBase64(new Uint8Array(nameEncrypted))
+      } catch {
+        return null
+      }
+    },
+    [user, sessionPrivateKey]
+  )
+
   return {
     isLoading,
     error,
@@ -522,6 +545,7 @@ export function useCrypto(): UseCryptoReturn {
     decryptFileNames,
     decryptFolderNames,
     decryptFileNamesAndKeys,
+    encryptFileNameForRename,
     shareFile,
     clearError,
   }

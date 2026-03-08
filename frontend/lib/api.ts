@@ -446,6 +446,13 @@ export const filesApi = {
       `/files/${fileId}`,
       { folder_id: targetFolderId }
     ),
+
+  /** Rinomina un file (name_encrypted già cifrato lato client). */
+  rename: (fileId: string, nameEncrypted: string) =>
+    apiClient.patch<{ renamed: boolean; file_id: string }>(
+      `/files/${fileId}/name`,
+      { name_encrypted: nameEncrypted }
+    ),
 }
 
 // ─── Folders API ─────────────────────────────────────────────────────────────
@@ -481,6 +488,9 @@ export const foldersApi = {
     apiClient.patch<{ updated: boolean }>(`/folders/${folderId}`, {
       parent_id: targetParentId,
     }),
+
+  patch: (folderId: string, payload: Record<string, unknown>) =>
+    apiClient.patch(`/folders/${folderId}`, payload),
 
   listRoot: () => apiClient.get<Folder[]>('/folders/'),
 

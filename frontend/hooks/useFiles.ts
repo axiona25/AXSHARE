@@ -196,11 +196,24 @@ export function useFileMutations() {
     []
   )
 
+  const renameFile = useCallback(
+    async (fileId: string, nameEncrypted: string, folderId?: string | null) => {
+      await filesApi.rename(fileId, nameEncrypted)
+      const key =
+        folderId != null && folderId !== ''
+          ? `/folders/${folderId}/files`
+          : '/folders/root/files'
+      await mutate(key)
+    },
+    []
+  )
+
   return {
     createFolder,
     deleteFile,
     deleteFolder,
     renameFolder,
+    renameFile,
     restoreVersion,
     deleteVersion,
     setSelfDestruct,

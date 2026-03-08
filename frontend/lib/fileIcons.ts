@@ -44,14 +44,31 @@ const FOLDER_ICONS = [
   `${ICONS_BASE}/folder06.png`,
 ] as const
 
-/** Indice icona cartella (1-6) → colore per il menu contestuale */
-export const FOLDER_ICON_OPTIONS: { index: 1 | 2 | 3 | 4 | 5 | 6; color: string; label: string }[] = [
-  { index: 1, color: '#F59E0B', label: 'Giallo' },
-  { index: 2, color: '#546E7A', label: 'Grigio' },
-  { index: 3, color: '#26A69A', label: 'Teal' },
-  { index: 4, color: '#3299F3', label: 'Blu' },
-  { index: 5, color: '#7E57C2', label: 'Viola' },
-  { index: 6, color: '#43A047', label: 'Verde' },
+const FOLDER_COLOR_MAP: Record<string, { normal: string; locked: string }> = {
+  yellow: { normal: '/icons/folder_yellow.svg', locked: '/icons/folder_yellow_locked.svg' },
+  blue:   { normal: '/icons/folder_blue.svg',   locked: '/icons/folder_blue_locked.svg' },
+  green:  { normal: '/icons/folder_green.svg',  locked: '/icons/folder_green_locked.svg' },
+  red:    { normal: '/icons/folder_red.svg',     locked: '/icons/folder_red_locked.svg' },
+  purple: { normal: '/icons/folder_purple.svg', locked: '/icons/folder_purple_locked.svg' },
+  orange: { normal: '/icons/folder_orange.svg', locked: '/icons/folder_orange_locked.svg' },
+  teal:   { normal: '/icons/folder_teal.svg',   locked: '/icons/folder_teal_locked.svg' },
+  pink:   { normal: '/icons/folder_pink.svg',   locked: '/icons/folder_pink_locked.svg' },
+  indigo: { normal: '/icons/folder_indigo.svg', locked: '/icons/folder_indigo_locked.svg' },
+  gray:   { normal: '/icons/folder_gray.svg',   locked: '/icons/folder_gray_locked.svg' },
+}
+
+/** Indice icona cartella (1-10) → colore per il menu contestuale */
+export const FOLDER_ICON_OPTIONS: { index: number; color: string; label: string; colorKey: string }[] = [
+  { index: 1,  color: '#F9A825', label: 'Giallo',  colorKey: 'yellow' },
+  { index: 2,  color: '#546E7A', label: 'Grigio',  colorKey: 'gray'   },
+  { index: 3,  color: '#00897B', label: 'Teal',    colorKey: 'teal'   },
+  { index: 4,  color: '#1E88E5', label: 'Blu',     colorKey: 'blue'   },
+  { index: 5,  color: '#8E24AA', label: 'Viola',   colorKey: 'purple' },
+  { index: 6,  color: '#43A047', label: 'Verde',   colorKey: 'green'  },
+  { index: 7,  color: '#FB8C00', label: 'Arancio', colorKey: 'orange' },
+  { index: 8,  color: '#E53935', label: 'Rosso',   colorKey: 'red'    },
+  { index: 9,  color: '#E91E63', label: 'Rosa',    colorKey: 'pink'   },
+  { index: 10, color: '#3949AB', label: 'Indigo',  colorKey: 'indigo' },
 ]
 
 const AXS_ICON_MAP: Record<string, string> = {
@@ -120,4 +137,9 @@ export function getFolderIcon(_folderName: string): string {
 /** Restituisce il path dell'icona cartella per indice 1-6 (per menu contestuale / preferenza). */
 export function getFolderIconByIndex(index: 1 | 2 | 3 | 4 | 5 | 6): string {
   return FOLDER_ICONS[index - 1]
+}
+
+export function getFolderColorIcon(color: string, isEncrypted: boolean): string {
+  const entry = FOLDER_COLOR_MAP[color] ?? FOLDER_COLOR_MAP['yellow']
+  return isEncrypted ? entry.locked : entry.normal
 }

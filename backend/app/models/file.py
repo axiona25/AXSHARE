@@ -35,6 +35,7 @@ class Folder(Base, UUIDMixin, TimestampMixin):
     destroyed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    color: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, default="yellow")
 
     owner: Mapped["User"] = relationship("User", back_populates="owned_folders")
     files: Mapped[list["File"]] = relationship("File", back_populates="folder")

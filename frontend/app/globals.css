@@ -1999,6 +1999,16 @@ body {
   align-items: center;
   justify-content: flex-start;
 }
+.ax-dash-mockup-root .folder-card-favorite .folder-icon-img-wrap-card-folder {
+  width: 68px;
+  height: 58px;
+  margin-bottom: 4px;
+}
+.ax-dash-mockup-root .folder-card-favorite .folder-icon-img-wrap-card-folder img {
+  width: 68px !important;
+  height: 58px !important;
+  object-fit: contain;
+}
 .ax-dash-mockup-root .folder-icon-solid {
   width: 100%;
   height: 100%;
@@ -2020,11 +2030,13 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  padding-left: 4px;
 }
 .ax-dash-mockup-root .folder-card-favorite .folder-meta {
   font-size: 11px;
   color: var(--ax-muted);
   font-weight: 400;
+  padding-left: 4px;
 }
 
 .ax-dash-mockup-root .files-section {
@@ -2167,6 +2179,23 @@ body {
 .ax-dash-mockup-root .file-table tr.file-table-row-file td:nth-child(2) {
   padding-left: 9px;
 }
+.ax-dash-mockup-root .file-table tr.file-table-row-file .file-type-icon-wrap {
+  padding-left: 9px;
+  width: 52px;
+  height: 52px;
+}
+.ax-dash-mockup-root .file-table tr.file-table-row-file .file-type-icon {
+  width: 52px;
+  height: 52px;
+}
+.ax-dash-mockup-root .file-table tr.file-table-row-file .file-open-loader {
+  width: 52px;
+  height: 52px;
+}
+.ax-dash-mockup-root .file-table tr.file-table-row-file .file-name,
+.ax-dash-mockup-root .file-table tr.file-table-row-file .file-name-inline-edit {
+  padding-left: 2px;
+}
 .ax-dash-mockup-root .file-table tr:last-child td { border-bottom: none; }
 /* Riga subito prima di una riga bianca: bordo inferiore bianco (nessun bordo colorato) */
 .ax-dash-mockup-root .file-table tbody tr:has(+ tr.file-table-empty-row) td {
@@ -2249,6 +2278,22 @@ body {
   font-weight: 400;
   color: var(--ax-navy);
   font-size: 13.5px;
+}
+.ax-dash-mockup-root .file-name-inline-edit {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--ax-navy);
+  border: 1px solid var(--ax-blue);
+  border-radius: 6px;
+  background: white;
+  font-family: inherit;
+  outline: none;
+}
+.ax-dash-mockup-root .file-name-inline-edit:focus {
+  box-shadow: 0 0 0 2px rgba(var(--ax-blue-rgb, 59, 130, 246), 0.2);
 }
 .ax-dash-mockup-root .file-size-cell {
   font-size: 12px;
