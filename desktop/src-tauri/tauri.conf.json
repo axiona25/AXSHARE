@@ -4,10 +4,10 @@
   "version": "0.1.2",
   "identifier": "com.axshare.app",
   "build": {
-    "frontendDist": "../../frontend/out",
+    "frontendDist": "../../frontend/out/desktop",
     "devUrl": "http://localhost:3000/desktop",
-    "beforeDevCommand": "cd ../frontend && npm run dev -- -p 3000",
-    "beforeBuildCommand": "cd ../frontend && npm run build:tauri"
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "cd ../../frontend && npm run build:tauri"
   },
   "plugins": {
     "deep-link": {
@@ -22,9 +22,9 @@
       {
         "label": "main",
         "title": "AXSHARE",
-        "url": "desktop/index.html",
-        "width": 420,
-        "height": 580,
+        "url": "index.html",
+        "width": 760,
+        "height": 720,
         "resizable": false,
         "fullscreen": false,
         "decorations": true,
@@ -34,12 +34,6 @@
         "devtools": true
       }
     ],
-    "trayIcon": {
-      "iconPath": "icons/tray-icon.png",
-      "iconAsTemplate": true,
-      "menuOnLeftClick": false,
-      "tooltip": "AXSHARE"
-    },
     "security": {
       "csp": "default-src 'self'; connect-src 'self' http://localhost:8000 https://*.axshare.io; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
     }

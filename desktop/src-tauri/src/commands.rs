@@ -3,6 +3,17 @@ use tauri::{Manager, State};
 use crate::virtual_disk::DiskFileEntry;
 use crate::AppState;
 
+/// Voce file/cartella già decifrata dal frontend (nomi e chiavi pronti).
+#[derive(serde::Deserialize, Clone)]
+pub struct DecryptedFileEntry {
+    pub file_id: String,
+    pub name: String,
+    pub size: u64,
+    pub is_folder: bool,
+    pub folder_path: String,
+    pub file_key_base64: Option<String>,
+}
+
 #[tauri::command]
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -50,6 +61,18 @@ pub async fn open_devtools(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn set_main_window_size(app: tauri::AppHandle, width: u32, height: u32) -> Result<(), String> {
+    use tauri::LogicalSize;
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Window 'main' not found".to_string())?;
+    window
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn mount_virtual_disk(
     _mount_point: String,
     jwt_token: String,
@@ -86,6 +109,40 @@ pub async fn cleanup_disk_files(state: State<'_, AppState>) -> Result<u32, Strin
     state.local_db.remove_system_files()
 }
 
+fn icon_dir_for_encryptor(app: &tauri::AppHandle) -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("AXSHARE_ICONS_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    app.path()
+        .resource_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("icons")
+}
+
+/// Cifra i file locali tracciati (status=plain) in .axs con icona locked. Chiamato prima del logout.
+#[tauri::command]
+pub async fn encrypt_local_files_command(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    println!("[DISK] encrypt_local_files_command invoked (logout)");
+    let icon_dir = icon_dir_for_encryptor(&app);
+    println!("[DISK] icon_dir: {:?}, exists: {}", icon_dir, icon_dir.exists());
+    crate::local_encryptor::encrypt_local_files(state.local_db.as_ref(), Some(icon_dir.as_path())).await;
+    Ok(())
+}
+
+/// Decifra i file locali .axs (status=encrypted). Chiamato dopo PIN corretto al login.
+#[tauri::command]
+pub async fn decrypt_local_files_command(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let icon_dir = icon_dir_for_encryptor(&app);
+    crate::local_encryptor::decrypt_local_files(state.local_db.as_ref(), Some(icon_dir.as_path())).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_disk_file_list(
     files: Vec<DiskFileEntry>,
@@ -114,7 +171,44 @@ pub async fn update_disk_file_list(
         );
     }
 
+    log::info!("[DISK] update_disk_file_list: chiamata virtual_disk.update_files con {} voci", files.len());
     state.virtual_disk.update_files(files).await?;
+    log::info!("[DISK] update_disk_file_list: virtual_disk.update_files completato");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_disk_files_decrypted(
+    entries: Vec<DecryptedFileEntry>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let disk_entries: Vec<DiskFileEntry> = entries
+        .into_iter()
+        .map(|e| DiskFileEntry {
+            file_id: e.file_id,
+            name: e.name,
+            size: e.size,
+            is_folder: e.is_folder,
+            folder_path: e.folder_path,
+            file_key_base64: e.file_key_base64,
+        })
+        .collect();
+    state.virtual_disk.update_files(disk_entries).await
+}
+
+#[tauri::command]
+pub async fn set_jwt_token(
+    jwt_token: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    println!("[DISK] set_jwt_token: len={}", jwt_token.len());
+    state.virtual_disk.set_jwt_token(jwt_token).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_volume_icon(state: State<'_, AppState>) -> Result<(), String> {
+    state.virtual_disk.apply_volume_icon().await;
     Ok(())
 }
 
@@ -175,7 +269,25 @@ pub async fn disable_offline_file(
 pub async fn list_offline_files(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let files = state.sync_engine.list_offline_files().await;
+    let db = &state.local_db;
+    let files: Vec<serde_json::Value> = db
+        .list_all()
+        .into_iter()
+        .filter(|f| {
+            // File cifrati o in chiaro fuori dal disco virtuale e dalla staging WebDAV
+            (f.status == "encrypted" || f.status == "plain")
+                && !f.local_path.contains("/Volumes/axshare-disk")
+                && !f.local_path.contains("axshare_webdav")
+        })
+        .map(|f| {
+            serde_json::json!({
+                "local_path": f.local_path,
+                "file_id": f.file_id,
+                "original_name": f.original_name,
+                "status": f.status,
+            })
+        })
+        .collect();
     Ok(serde_json::to_value(files).unwrap())
 }
 

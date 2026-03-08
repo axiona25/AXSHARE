@@ -1,22 +1,35 @@
-/**
- * Layout per il client desktop AXSHARE (finestra compatta).
- * Esclude sidebar e header della web app.
- */
+'use client'
+import { useEffect } from 'react'
+
 export default function DesktopLayout({
-  children,
+  children
 }: {
   children: React.ReactNode
 }) {
+  useEffect(() => {
+    document.body.classList.add('ax-desktop-active')
+    return () => document.body.classList.remove('ax-desktop-active')
+  }, [])
+
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      const anchor = target.closest('a')
+      if (anchor && !anchor.href.includes('/desktop')) {
+        e.preventDefault()
+      }
+    }
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [])
+
   return (
-    <div
-      style={{
-        width: '420px',
-        height: '580px',
-        overflow: 'hidden',
-        background: 'var(--ax-bg-primary, var(--ax-surface-0))',
-      }}
-    >
-      {children}
+    <div className="ax-desktop-root" style={{ userSelect: 'none' }}>
+      <div className="ax-desktop-bg" aria-hidden />
+      <div className="ax-desktop-grid" aria-hidden />
+      <div className="ax-desktop-container">
+        {children}
+      </div>
     </div>
   )
 }

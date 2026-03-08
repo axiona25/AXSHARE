@@ -34,6 +34,8 @@ pub struct FileEntry {
     pub name: String,
     pub size: u64,
     pub file_key_base64: String,
+    /// Path della cartella padre (es. "/" o "/NomeCartella"). Usato per scrivere il file nella sottodirectory corretta.
+    pub folder_path: String,
 }
 
 fn safe_filename(name: &str, file_id: &str) -> String {
@@ -59,6 +61,9 @@ fn should_skip_file(filename: &str) -> bool {
         return true;
     }
     if name == ".DS_Store" {
+        return true;
+    }
+    if name == "Icon" || name == ".VolumeIcon.icns" {
         return true;
     }
     if name.starts_with('.') {
@@ -99,9 +104,18 @@ impl AxshareWebDAV {
         &self.temp_dir
     }
 
-    /// Scarica, decifra e salva in chiaro con nome originale. Usa staging + swap atomico
-    /// così il disco WebDAV vede sempre una directory completa, mai uno stato intermedio.
-    pub async fn update_files(&self, entries: Vec<FileEntry>) {
+    /// Scarica, decifra e salva in chiaro con nome originale. Usa staging + swap atomico.
+    /// `folder_paths`: path di cartelle da creare (es. ["/", "/Cartella1"]). `entries`: file con folder_path.
+    pub async fn update_files(
+        &self,
+        folder_paths: Vec<String>,
+        entries: Vec<FileEntry>,
+    ) {
+        log::info!(
+            "[WEBDAV] update_files ENTRATA: folder_paths={}, entries={}",
+            folder_paths.len(),
+            entries.len()
+        );
         let entries: Vec<FileEntry> = entries
             .into_iter()
             .filter(|f| !should_skip_file(f.name.trim()))
@@ -114,7 +128,25 @@ impl AxshareWebDAV {
         }
         if let Ok(rd) = std::fs::read_dir(&staging_dir) {
             for e in rd.flatten() {
-                let _ = std::fs::remove_file(e.path());
+                let p = e.path();
+                if p.is_dir() {
+                    let _ = std::fs::remove_dir_all(&p);
+                } else {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+
+        for path in &folder_paths {
+            let rel = path.trim_start_matches('/');
+            if rel.is_empty() {
+                continue;
+            }
+            let full = staging_dir.join(rel);
+            if let Err(e) = std::fs::create_dir_all(&full) {
+                log::warn!("[WEBDAV] create_dir_all {:?}: {}", full, e);
+            } else {
+                log::info!("[WEBDAV] create_dir_all OK -> {}", full.display());
             }
         }
 
@@ -125,6 +157,7 @@ impl AxshareWebDAV {
             entry: FileEntry,
             safe: String,
             hash: String,
+            folder_path: String,
         }
         let mut written: Vec<Written> = Vec::new();
 
@@ -170,9 +203,28 @@ impl AxshareWebDAV {
                 continue;
             }
 
-            let path = staging_dir.join(&safe);
-            if !std::fs::write(&path, &plain).is_ok() {
+            let rel = f.folder_path.trim_start_matches('/');
+            let dest_dir = if rel.is_empty() {
+                staging_dir.clone()
+            } else {
+                staging_dir.join(rel)
+            };
+            if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+                log::warn!("[WEBDAV] create_dir_all {:?}: {}", dest_dir, e);
+                eprintln!("[WEBDAV] create_dir_all FAIL dest_dir={:?}: {}", dest_dir, e);
                 continue;
+            }
+            log::info!("[WEBDAV] dest_dir for file {} (folder_path={:?}) -> {}", safe, f.folder_path, dest_dir.display());
+            let path = dest_dir.join(&safe);
+            match std::fs::write(&path, &plain) {
+                Ok(()) => {
+                    log::info!("[DISK_WRITE] file: {} -> path: {}", safe, path.display());
+                }
+                Err(e) => {
+                    log::error!("[WEBDAV] write FAIL {} -> {:?}: {}", safe, path, e);
+                    eprintln!("[WEBDAV] write FAIL file={} path={:?}: {}", safe, path, e);
+                    continue;
+                }
             }
 
             let mut hasher = Sha256::new();
@@ -182,8 +234,9 @@ impl AxshareWebDAV {
                 entry: f.clone(),
                 safe: safe.clone(),
                 hash,
+                folder_path: f.folder_path.clone(),
             });
-            log::info!("[WEBDAV] Staging: {}", safe);
+            log::info!("[WEBDAV] Staging: {}/{}", f.folder_path, safe);
         }
 
         let old_dir = self.temp_dir.with_extension("old");
@@ -208,7 +261,12 @@ impl AxshareWebDAV {
         }
 
         for w in &written {
-            let path = self.temp_dir.join(&w.safe);
+            let rel_dir = w.folder_path.trim_start_matches('/');
+            let path = if rel_dir.is_empty() {
+                self.temp_dir.join(&w.safe)
+            } else {
+                self.temp_dir.join(rel_dir).join(&w.safe)
+            };
             #[cfg(unix)]
             let _ = crate::xattr_manager::set_axshare_xattr(
                 &path,
@@ -381,6 +439,7 @@ impl AxshareWebDAV {
                 name: filename.to_string(),
                 size: data.len() as u64,
                 file_key_base64: key_b64.clone(),
+                folder_path: "/".to_string(),
             });
         }
 

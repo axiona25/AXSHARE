@@ -1,8 +1,12 @@
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     App, Emitter, Manager,
 };
+
+/// Icona tray: logo AXSHARE (favicon) dalla cartella media
+const TRAY_ICON: Image<'_> = tauri::include_image!("icons/favicon.png");
 
 #[cfg(target_os = "macos")]
 pub fn set_activation_policy(app: &tauri::AppHandle, visible: bool) {
@@ -28,21 +32,14 @@ pub fn setup_tray(app: &mut App) -> tauri::Result<()> {
 
     let menu = Menu::with_items(app, &[&show, &sync, &sep1, &lock, &disk, &sep2, &quit])?;
 
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .expect("Tauri config must include bundle.icon (run: npm run tauri icon)");
-
     let tray = TrayIconBuilder::new()
-        .icon(icon)
+        .icon(TRAY_ICON)
         .menu(&menu)
         .tooltip("AXSHARE")
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| {
             match event.id.as_ref() {
                 "show" => {
-                    #[cfg(target_os = "macos")]
-                    set_activation_policy(app, true);
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
                         // Non chiamare set_focus: l'utente porta in primo piano manualmente
@@ -62,8 +59,6 @@ pub fn setup_tray(app: &mut App) -> tauri::Result<()> {
                 }
                 "disk" => {
                     if let Some(window) = app.get_webview_window("main") {
-                        #[cfg(target_os = "macos")]
-                        set_activation_policy(app, true);
                         let _ = window.show();
                         let _ = window.set_focus();
                         let _ = window.emit("toggle-virtual-disk", ());
@@ -90,12 +85,8 @@ pub fn setup_tray(app: &mut App) -> tauri::Result<()> {
                 if let Some(window) = app.get_webview_window("main") {
                     let visible = window.is_visible().unwrap_or(false);
                     if visible {
-                        #[cfg(target_os = "macos")]
-                        set_activation_policy(&app, false);
                         let _ = window.hide();
                     } else {
-                        #[cfg(target_os = "macos")]
-                        set_activation_policy(&app, true);
                         let _ = window.show();
                         // Non chiamare set_focus: l'utente porta in primo piano manualmente
                     }

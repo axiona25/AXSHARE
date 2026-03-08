@@ -11,6 +11,7 @@ pub mod crypto_fuse;
 mod dragdrop;
 mod file_protector;
 mod file_watcher;
+mod local_encryptor;
 mod file_watcher_local;
 mod keychain;
 mod local_db;
@@ -44,6 +45,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
@@ -76,6 +83,7 @@ pub fn run() {
             commands::get_virtual_disk_status,
             commands::open_url_external,
             commands::open_devtools,
+            commands::set_main_window_size,
             keychain::save_token,
             keychain::get_token,
             keychain::delete_token,
@@ -94,6 +102,9 @@ pub fn run() {
             commands::unmount_virtual_disk,
             commands::is_disk_mounted,
             commands::update_disk_file_list,
+            commands::update_disk_files_decrypted,
+            commands::set_jwt_token,
+            commands::set_volume_icon,
             commands::set_sync_token,
             commands::start_sync,
             commands::pause_sync,
@@ -109,6 +120,8 @@ pub fn run() {
             commands::open_file_native,
             commands::mark_file_as_axshare,
             commands::cleanup_disk_files,
+            commands::encrypt_local_files_command,
+            commands::decrypt_local_files_command,
             commands::delete_temp_file,
             commands::set_tray_status,
             commands::watch_temp_file,
@@ -153,6 +166,9 @@ pub fn run() {
             dragdrop::setup_drag_drop(&app.handle());
             tray::setup_tray(app)?;
             file_watcher_local::start_local_file_watcher(db_for_watcher);
+
+            #[cfg(target_os = "macos")]
+            crate::tray::set_activation_policy(app.handle(), false);
 
             Ok(())
         })

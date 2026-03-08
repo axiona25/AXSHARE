@@ -20,6 +20,13 @@ fn try_register_file(db: &LocalDb, path: &std::path::Path) {
     {
         return;
     }
+    if path
+        .extension()
+        .map(|e| e == "axs")
+        .unwrap_or(false)
+    {
+        return;
+    }
     let path_str = path.to_string_lossy();
     if path_str.contains("axshare_webdav") {
         return;
@@ -29,6 +36,7 @@ fn try_register_file(db: &LocalDb, path: &std::path::Path) {
         Ok(d) => d,
         Err(_) => return,
     };
+    println!("[WATCHER] Scansione file: {} ({} bytes)", path.display(), data.len());
     if data.is_empty() {
         return;
     }
@@ -42,6 +50,11 @@ fn try_register_file(db: &LocalDb, path: &std::path::Path) {
     let hash = format!("{:x}", hasher.finalize());
 
     let Some(entry) = db.find_by_hash(&hash) else {
+        println!(
+            "[WATCHER] Hash non trovato nel DB: {} ({})",
+            path.display(),
+            &hash[..8.min(hash.len())]
+        );
         return;
     };
 
@@ -55,8 +68,9 @@ fn try_register_file(db: &LocalDb, path: &std::path::Path) {
         status: "plain".to_string(),
     };
 
-    if db.upsert(&new_entry).is_ok() {
-        log::info!("[WATCHER] Tracciato per hash: {}", new_path);
+    match db.upsert(&new_entry) {
+        Ok(_) => println!("[WATCHER] Tracciato per hash: {}", new_path),
+        Err(e) => eprintln!("[WATCHER] upsert fallito per {}: {}", new_path, e),
     }
 }
 
@@ -88,7 +102,7 @@ pub fn start_local_file_watcher(db: Arc<LocalDb>) {
         ) {
             Ok(w) => w,
             Err(e) => {
-                log::error!("[WATCHER] Watcher fallito: {}", e);
+                eprintln!("[WATCHER] Watcher fallito: {}", e);
                 return;
             }
         };
@@ -96,7 +110,7 @@ pub fn start_local_file_watcher(db: Arc<LocalDb>) {
         for dir in &watch_dirs {
             if dir.exists() {
                 if watcher.watch(dir, RecursiveMode::NonRecursive).is_ok() {
-                    log::info!("[WATCHER] Watching: {:?}", dir);
+                    println!("[WATCHER] Watching: {:?}", dir);
                 }
             }
         }

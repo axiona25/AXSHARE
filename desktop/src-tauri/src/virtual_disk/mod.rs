@@ -4,6 +4,8 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+const API_PREFIX: &str = "/api/v1";
+
 #[cfg(target_os = "macos")]
 use crate::virtual_disk::webdav_server::{start_webdav_server, AxshareWebDAV, FileEntry};
 
@@ -65,9 +67,204 @@ pub struct DiskFileEntry {
 #[cfg(target_os = "macos")]
 pub mod webdav_server;
 
+/// Estrae file_key_base64 dal JSON di un file (se presente; il backend list non lo restituisce).
+fn get_file_key(f: &serde_json::Value) -> Option<String> {
+    f.get("file_key_base64")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// Nome sicuro per cartella (nomi cifrati dal backend).
+fn safe_folder_name(id: &str, name_encrypted: Option<&str>) -> String {
+    let name = name_encrypted
+        .unwrap_or("")
+        .chars()
+        .take(40)
+        .collect::<String>()
+        .replace('/', "_")
+        .replace('\\', "_");
+    if name.is_empty() {
+        format!("folder_{}", id.chars().take(8).collect::<String>())
+    } else {
+        name
+    }
+}
+
+/// Recupera l'albero cartelle/file dal backend (GET /folders, /folders/{id}/children, /folders/{id}/files).
+/// I file hanno file_key_base64=None (il backend non restituisce la chiave; il frontend può inviarla con update_disk_file_list).
+#[cfg(target_os = "macos")]
+async fn fetch_folder_tree(
+    backend_url: &str,
+    token: &str,
+) -> Result<Vec<DiskFileEntry>, String> {
+    let api_base = format!("{}{}/folders", backend_url.trim_end_matches('/'), API_PREFIX);
+    let client = reqwest::Client::new();
+    let auth = format!("Bearer {}", token);
+
+    let mut out: Vec<DiskFileEntry> = Vec::new();
+
+    // File in root (prima delle cartelle)
+    let root_files_url = format!(
+        "{}{}/folders/root/files",
+        backend_url.trim_end_matches('/'),
+        API_PREFIX
+    );
+    let root_resp = client
+        .get(&root_files_url)
+        .header("Authorization", &auth)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if root_resp.status().is_success() {
+        if let Ok(files) = root_resp.json::<Vec<serde_json::Value>>().await {
+            for f in files {
+                let file_id = f["id"].as_str().unwrap_or("").to_string();
+                let name = f["name_encrypted"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .chars()
+                    .take(80)
+                    .collect::<String>()
+                    .replace('/', "_")
+                    .replace('\\', "_");
+                let size = f["size"].as_u64().unwrap_or(0);
+                let key = get_file_key(&f);
+                if !file_id.is_empty() {
+                    out.push(DiskFileEntry {
+                        file_id,
+                        name,
+                        size,
+                        is_folder: false,
+                        folder_path: "/".to_string(),
+                        file_key_base64: key,
+                    });
+                }
+            }
+        }
+    }
+
+    // Root: GET /api/v1/folders (list root folders)
+    let root_url = format!("{}", api_base);
+    let resp = client
+        .get(&root_url)
+        .header("Authorization", &auth)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("root folders failed: {}", resp.status()));
+    }
+    let root_folders: Vec<serde_json::Value> = resp.json().await.map_err(|e| e.to_string())?;
+
+    #[derive(Clone)]
+    struct FolderJob {
+        id: String,
+        parent_path: String,
+    }
+    let mut queue: Vec<FolderJob> = Vec::new();
+    for r in &root_folders {
+        let id = r["id"].as_str().ok_or("missing root folder id")?.to_string();
+        let name_enc = r["name_encrypted"].as_str();
+        let name = safe_folder_name(&id, name_enc);
+        out.push(DiskFileEntry {
+            file_id: id.clone(),
+            name: name.clone(),
+            size: 0,
+            is_folder: true,
+            folder_path: "/".to_string(),
+            file_key_base64: None,
+        });
+        let parent_path = format!("/{}", name);
+        queue.push(FolderJob {
+            id,
+            parent_path,
+        });
+    }
+
+    while let Some(job) = queue.pop() {
+        let folder_base = format!("{}/{}", api_base.trim_end_matches('/'), job.id);
+
+        let url = format!("{}/children", folder_base);
+        let resp = client
+            .get(&url)
+            .header("Authorization", &auth)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("children failed: {}", resp.status()));
+        }
+        let children: Vec<serde_json::Value> = resp.json().await.map_err(|e| e.to_string())?;
+
+        for c in &children {
+            let id = c["id"].as_str().ok_or("missing id")?.to_string();
+            let name_enc = c["name_encrypted"].as_str();
+            let name = safe_folder_name(&id, name_enc);
+            let folder_path = if job.parent_path.is_empty() {
+                format!("/{}", name)
+            } else {
+                format!("{}/{}", job.parent_path, name)
+            };
+            out.push(DiskFileEntry {
+                file_id: id.clone(),
+                name: name.clone(),
+                size: 0,
+                is_folder: true,
+                folder_path: folder_path.clone(),
+                file_key_base64: None,
+            });
+            queue.push(FolderJob { id, parent_path: folder_path });
+        }
+
+        let files_url = format!("{}/files", folder_base);
+        let files_resp = client
+            .get(&files_url)
+            .header("Authorization", &auth)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if files_resp.status().is_success() {
+            if let Ok(files) = files_resp.json::<Vec<serde_json::Value>>().await {
+                for f in files {
+                    let id = f["id"].as_str().ok_or("missing file id")?.to_string();
+                    let name_enc = f["name_encrypted"].as_str().unwrap_or("");
+                    let name = if name_enc.is_empty() {
+                        format!("file_{}", id.chars().take(8).collect::<String>())
+                    } else {
+                        name_enc
+                            .chars()
+                            .take(80)
+                            .collect::<String>()
+                            .replace('/', "_")
+                            .replace('\\', "_")
+                    };
+                    let size = f["size"].as_u64().unwrap_or(0);
+                    let folder_path = if job.parent_path.is_empty() {
+                        "/".to_string()
+                    } else {
+                        job.parent_path.clone()
+                    };
+                    out.push(DiskFileEntry {
+                        file_id: id,
+                        name,
+                        size,
+                        is_folder: false,
+                        folder_path,
+                        file_key_base64: None,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 pub struct VirtualDisk {
     #[cfg(target_os = "macos")]
     webdav: Arc<AxshareWebDAV>,
+    #[cfg(target_os = "macos")]
+    last_disk_files: Arc<RwLock<Vec<DiskFileEntry>>>,
     mounted: Arc<RwLock<bool>>,
 }
 
@@ -80,6 +277,8 @@ impl VirtualDisk {
                 BACKEND_URL.to_string(),
                 Some(local_db),
             )),
+            #[cfg(target_os = "macos")]
+            last_disk_files: Arc::new(RwLock::new(Vec::new())),
             mounted: Arc::new(RwLock::new(false)),
         }
     }
@@ -90,7 +289,7 @@ impl VirtualDisk {
             return Err("Disco già montato".to_string());
         }
 
-        *self.webdav.jwt_token.write().await = jwt_token;
+        *self.webdav.jwt_token.write().await = jwt_token.clone();
 
         let webdav = self.webdav.clone();
         tokio::spawn(async move {
@@ -172,6 +371,42 @@ impl VirtualDisk {
 
         *self.mounted.write().await = true;
 
+        // Imposta icona personalizzata sul volume montato
+        let icons_dir = std::env::var("AXSHARE_ICONS_DIR").unwrap_or_default();
+        if !icons_dir.is_empty() {
+            let png_path = format!("{}/Hard_Disk_active.png", icons_dir);
+            if std::path::Path::new(&png_path).exists() {
+                // Crea iconset temporaneo
+                let iconset = "/tmp/axshare_vol.iconset";
+                let _ = std::fs::create_dir_all(iconset);
+                let _ = std::fs::copy(&png_path, format!("{}/icon_512x512.png", iconset));
+                let _ = std::fs::copy(&png_path, format!("{}/icon_256x256.png", iconset));
+                let _ = std::fs::copy(&png_path, format!("{}/icon_128x128.png", iconset));
+                let icns_path = "/tmp/axshare_vol.icns";
+                let _ = std::process::Command::new("iconutil")
+                    .args(["-c", "icns", iconset, "-o", icns_path])
+                    .output();
+                if std::path::Path::new(icns_path).exists() {
+                    // Scrivi .VolumeIcon.icns nella root del volume
+                    let dest = format!("{}/.VolumeIcon.icns", mount_point);
+                    let _ = std::fs::copy(icns_path, &dest);
+                    // Attiva flag icona custom sul volume
+                    let _ = std::process::Command::new("SetFile")
+                        .args(["-a", "C", mount_point])
+                        .output();
+                    // Nasconde il file icona
+                    let _ = std::process::Command::new("SetFile")
+                        .args(["-a", "V", &dest])
+                        .output();
+                    // Refresh Finder
+                    let _ = std::process::Command::new("osascript")
+                        .args(["-e", "tell application \"Finder\" to update item (POSIX file \"/Volumes/axshare-disk\") as alias"])
+                        .output();
+                    log::info!("[WEBDAV] Icona volume impostata via iconutil");
+                }
+            }
+        }
+
         let mounted_clone = self.mounted.clone();
         tokio::spawn(async move {
             start_health_check(mounted_clone, WEBDAV_PORT).await;
@@ -217,6 +452,24 @@ impl VirtualDisk {
     pub async fn update_files(&self, files: Vec<DiskFileEntry>) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
+            *self.last_disk_files.write().await = files.clone();
+            let mut folder_paths: Vec<String> = Vec::new();
+            for entry in &files {
+                if entry.is_folder {
+                    let full = if entry.folder_path == "/" || entry.folder_path.is_empty() {
+                        entry.name.clone()
+                    } else {
+                        format!(
+                            "{}/{}",
+                            entry.folder_path.trim_start_matches('/'),
+                            entry.name
+                        )
+                    };
+                    if !full.is_empty() && !folder_paths.contains(&full) {
+                        folder_paths.push(full);
+                    }
+                }
+            }
             let n = files.len();
             let mut entries = Vec::with_capacity(n);
             for f in files {
@@ -233,15 +486,22 @@ impl VirtualDisk {
                         name: f.name,
                         size: f.size,
                         file_key_base64: k,
+                        folder_path: f.folder_path.clone(),
                     });
                 }
             }
             println!(
-                "[VIRTUAL_DISK] update_files: {} DiskFileEntry -> {} FileEntry (con chiave)",
+                "[VIRTUAL_DISK] update_files: {} DiskFileEntry -> {} FileEntry (con chiave), {} cartelle",
                 n,
+                entries.len(),
+                folder_paths.len()
+            );
+            println!(
+                "[VIRTUAL_DISK] Chiamata webdav.update_files(folder_paths.len()={}, entries.len()={})",
+                folder_paths.len(),
                 entries.len()
             );
-            self.webdav.update_files(entries).await;
+            self.webdav.update_files(folder_paths, entries).await;
         }
         #[cfg(not(target_os = "macos"))]
         let _ = files;
@@ -261,6 +521,30 @@ impl VirtualDisk {
 
     #[cfg(not(target_os = "macos"))]
     pub async fn set_jwt_token(&self, _token: String) {}
+
+    #[cfg(target_os = "macos")]
+    pub async fn apply_volume_icon(&self) {
+        let icons_dir = std::env::var("AXSHARE_ICONS_DIR").unwrap_or_default();
+        if icons_dir.is_empty() {
+            return;
+        }
+        let mount_point = "/Volumes/axshare-disk";
+        let icns_path = "/tmp/axshare_vol.icns";
+        if std::path::Path::new(icns_path).exists() {
+            let dest = format!("{}/.VolumeIcon.icns", mount_point);
+            let _ = std::fs::copy(icns_path, &dest);
+            let _ = std::process::Command::new("SetFile")
+                .args(["-a", "C", mount_point])
+                .output();
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", "tell application \"Finder\" to update item (POSIX file \"/Volumes/axshare-disk\") as alias"])
+                .output();
+            log::info!("[WEBDAV] apply_volume_icon OK");
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub async fn apply_volume_icon(&self) {}
 }
 
 #[cfg(target_os = "windows")]

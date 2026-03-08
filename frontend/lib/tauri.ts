@@ -281,8 +281,8 @@ export async function mountVirtualDisk(mountPoint: string): Promise<void> {
   const token = await getAccessTokenSecure()
   if (!token) throw new Error('Non autenticato')
   await invoke('mount_virtual_disk', {
-    mount_point: mountPoint,
-    jwt_token: token,
+    mountPoint,
+    jwtToken: token,
   })
 }
 

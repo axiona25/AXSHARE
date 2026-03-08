@@ -31,13 +31,34 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   // 'standalone' per Docker; 'export' per build Tauri/static
-  output: process.env.NEXT_STANDALONE === '1' ? 'standalone' : 'export',
-  trailingSlash: true,
+  output:
+    process.env.NEXT_STANDALONE === '1'
+      ? 'standalone'
+      : process.env.TAURI_ENV === 'production'
+        ? 'export'
+        : undefined,
+  trailingSlash:
+    process.env.TAURI_ENV === 'production' ? true : false,
   images: { unoptimized: true },
   assetPrefix:
     process.env.TAURI_ENV === 'production' ? '' : undefined,
   async headers() {
     return [{ source: '/(.*)', headers: securityHeaders }]
+  },
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+        net: false,
+        tls: false,
+      }
+    }
+    config.ignoreWarnings = [
+      { module: /node_modules\/@opentelemetry/ },
+      { module: /node_modules\/@sentry/ },
+    ]
+    return config
   },
 }
 

@@ -136,14 +136,13 @@ async def upload_file(
     encrypted_data = await file.read()
     file_size = len(encrypted_data)
 
-    # Deduplicazione: stesso owner, stessa size, caricato negli ultimi 10 secondi
-    ten_seconds_ago = datetime.now(timezone.utc) - timedelta(seconds=10)
+    # Deduplicazione robusta: stesso owner, stesso content_hash
     existing = await db.execute(
         select(FileModel).where(
             FileModel.owner_id == current_user.id,
-            FileModel.size_bytes == file_size,
+            FileModel.content_hash == meta.content_hash,
             FileModel.is_destroyed.is_(False),
-            FileModel.created_at >= ten_seconds_ago,
+            FileModel.is_trashed.is_(False),
         )
     )
     duplicate = existing.scalar_one_or_none()

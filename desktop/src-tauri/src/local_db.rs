@@ -20,11 +20,15 @@ pub struct LocalFileEntry {
 }
 
 impl LocalDb {
+    /// Crea o apre il DB SQLite. Path: `data_local_dir()/axshare/local_files.db`
+    /// (es. macOS: ~/Library/Application Support/axshare/local_files.db — persistente).
     pub fn new() -> Result<Self, String> {
         let db_path = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("axshare")
             .join("local_files.db");
+
+        println!("[LOCAL_DB] Path DB: {}", db_path.display());
 
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -96,6 +100,33 @@ impl LocalDb {
             Err(_) => return vec![],
         };
         stmt.query_map(params![status], |row| {
+            Ok(LocalFileEntry {
+                local_path: row.get(0)?,
+                file_id: row.get(1)?,
+                file_key_base64: row.get(2)?,
+                original_name: row.get(3)?,
+                content_hash: row.get(4)?,
+                status: row.get(5)?,
+            })
+        })
+        .and_then(|m| m.collect::<Result<Vec<_>, _>>())
+        .unwrap_or_default()
+    }
+
+    pub fn list_all(&self) -> Vec<LocalFileEntry> {
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT local_path, file_id, file_key_base64,
+                    original_name, content_hash, status
+             FROM local_files",
+        ) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        stmt.query_map([], |row| {
             Ok(LocalFileEntry {
                 local_path: row.get(0)?,
                 file_id: row.get(1)?,
