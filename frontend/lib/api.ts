@@ -593,6 +593,7 @@ export const foldersApi = {
         updated_at: string | null
         type: 'folder'
         permission_expires_at?: string | null
+        color?: string | null
       }>
     >('/folders/shared-with-me'),
 

@@ -55,9 +55,8 @@ impl AutoLock {
                     log::info!("Auto-lock triggered after {} minutes of inactivity", timeout);
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let _ = window.emit("session-lock", ());
-                        // Mostra finestra se era nascosta (lock screen visibile al prossimo focus)
-                        let _ = window.show();
-                        // Non chiamare set_focus: non rubare il focus su macOS multi-schermo
+                        // Non chiamare show(): la finestra non deve riapparire da sola. L'utente
+                        // la riaprirà dal tray e vedrà la lock screen.
                     }
                 }
             }

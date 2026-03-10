@@ -45,10 +45,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Mostra e metti a fuoco solo se l'utente ha riaperto l'app esplicitamente (nessun file/link).
+            // Se argv contiene più di un argomento (es. deep link o file .axshare), non mostrare:
+            // evita che la finestra riappaia da sola dopo X quando si apre un link/file.
+            if argv.len() <= 1 {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
             }
         }))
         .plugin(tauri_plugin_os::init())
@@ -191,6 +196,13 @@ pub fn run() {
         .expect("error building AXSHARE desktop app")
         .run(|app, event| {
             match event {
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    // Clic sull'icona dock: mostra la finestra (utente ha riaperto esplicitamente).
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                    }
+                }
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                     if let Some(state) = app.try_state::<AppState>() {
                         #[cfg(target_os = "macos")]

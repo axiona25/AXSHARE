@@ -1,0 +1,75 @@
+---
+description: Convenzioni UI AXSHARE — tabelle file/cartelle, card In Evidenza, icone. Applicare a tutte le pagine.
+globs: 
+  - "**/dashboard/**"
+  - "**/*page*.tsx"
+  - "**/globals.css"
+---
+
+# AXSHARE — Convenzioni UI (da rispettare su tutte le pagine)
+
+Queste impostazioni sono state definite sulla dashboard e vanno **riutilizzate e rispettate** su tutte le altre pagine del progetto.
+
+---
+
+## 1. Tabella file e cartelle
+
+### Icone
+- **Righe FILE**: icona **52×52 px**. Usare classe `file-type-icon-wrap` + `file-type-icon`, dimensioni 52px (override in CSS per `.file-table-row-file`).
+- **Righe CARTELLA**: icona **44×44 px**. Usare `getFolderColorIcon(folder.color ?? 'yellow', true)` con wrap `file-type-icon-wrap` (44×44).
+- **Solo righe file**: padding sinistro icona e nome come sotto.
+
+### Padding (solo righe file)
+- **Cella NOME (td:nth-child(2))**: `padding-left: 9px`.
+- **Wrap icona file** (`.file-type-icon-wrap` in `.file-table-row-file`): `padding-left: 9px`, `width: 52px`, `height: 52px`.
+- **Nome file / input rinomina** (`.file-name`, `.file-name-inline-edit` in `.file-table-row-file`): `padding-left: 2px` (spazio ridotto tra icona e nome; il nome resta allineato).
+
+### Classi righe
+- Cartelle: `className="file-table-row-folder"`.
+- File: `className="file-table-row-file"`.
+
+### Struttura cella nome
+- Cartella: `<div class="file-name-cell"><div class="file-type-icon-wrap"><Image … 44×44 /></div> … nome …</div>`.
+- File: stesso, con Image 52×52 e classi come sopra.
+
+---
+
+## 2. Card “In Evidenza” (e card simili)
+
+### Icone
+- **Icona CARTELLA**: più grande delle file. Wrap con classe aggiuntiva `folder-icon-img-wrap-card-folder`, icona **68×58 px**. CSS: wrap 68×58, `margin-bottom: 4px` (per non spostare titolo/sottotitolo).
+- **Icona FILE**: **56×48 px**, wrap `folder-icon-img-wrap` (56×48, margin-bottom 14px).
+- Cartella: usare `getFolderColorIcon(item.color ?? … , true)`.
+
+### Titolo e sottotitolo (solo in queste card)
+- **Titolo** (`.folder-name`): `padding-left: 4px` per allineamento con l’icona.
+- **Sottotitolo** (`.folder-meta`): `padding-left: 4px`.
+- Scope: solo dentro `.folder-card-favorite` (card In Evidenza).
+
+### Layout card
+- Struttura: icona (wrap) → titolo (`.folder-name`) → sottotitolo (`.folder-meta`).
+- Dimensioni card e posizioni degli elementi non vanno cambiate quando si aggiungono queste regole.
+
+---
+
+## 3. Icone cartelle (globale)
+
+- Usare **`getFolderColorIcon(color, isEncrypted)`** da `@/lib/fileIcons` con `color` dalla API (es. `folder.color ?? 'yellow'`) e `isEncrypted: true`.
+- Non usare `getFolderIconByIndex` per le righe cartella in tabelle/liste (solo per le opzioni colore nei menu, es. `opt.index`).
+
+---
+
+## 4. Riepilogo valori
+
+| Contesto              | Elemento        | Valore / Regola                          |
+|----------------------|----------------|------------------------------------------|
+| Tabella – riga file  | Icona          | 52×52 px, padding-left wrap 9px          |
+| Tabella – riga file  | Nome           | padding-left 2px                         |
+| Tabella – riga cartella | Icona      | 44×44 px, getFolderColorIcon             |
+| Card In Evidenza     | Icona cartella | 68×58 px, wrap margin-bottom 4px        |
+| Card In Evidenza     | Icona file     | 56×48 px                                 |
+| Card In Evidenza     | Titolo / meta  | padding-left 4px                        |
+
+---
+
+Quando crei o modifichi pagine con tabelle file/cartelle o card simili a “In Evidenza”, applica queste stesse convenzioni (classi, dimensioni, padding) per coerenza visiva.

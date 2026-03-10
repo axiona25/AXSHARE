@@ -10,6 +10,7 @@ import { useCrypto } from '@/hooks/useCrypto'
 import { usePinVerification } from '@/hooks/usePinVerification'
 import { activityApi, foldersApi, filesApi, trashApi, shareLinksApi, permissionsApi, type ShareLinkData } from '@/lib/api'
 import { getFileIcon, getFileLabel, getAxsFileIcon, getAxshareFileIcon, getFolderColorIcon, FOLDER_ICON_OPTIONS } from '@/lib/fileIcons'
+import { getSafeDisplayName, NAME_PLACEHOLDER } from '@/lib/displayName'
 import { AppHeader } from '@/components/AppHeader'
 import { AppSidebar } from '@/components/AppSidebar'
 import ConfirmModal from '@/components/ConfirmModal'
@@ -367,7 +368,7 @@ export default function IMieiFilePage() {
   }
 
   function openFolder(folder: Folder) {
-    setBreadcrumb((prev) => [...prev, { id: folder.id, name: decryptedFolderNames[folder.id] ?? folder.name_encrypted }])
+    setBreadcrumb((prev) => [...prev, { id: folder.id, name: getSafeDisplayName(decryptedFolderNames[folder.id]) }])
     setCurrentFolderId(folder.id)
   }
 
@@ -463,7 +464,7 @@ export default function IMieiFilePage() {
   const filteredFolders = useMemo(() => {
     const list = q
       ? (folders ?? []).filter((folder) =>
-          (decryptedFolderNames[folder.id] ?? folder.name_encrypted ?? '').toLowerCase().includes(q)
+          (decryptedFolderNames[folder.id] ?? '').toLowerCase().includes(q)
         )
       : (folders ?? [])
     const withDates = list as Array<Folder & { created_at?: string; updated_at?: string }>
@@ -477,7 +478,7 @@ export default function IMieiFilePage() {
   const filteredFiles = useMemo(() => {
     const list = q
       ? visibleFiles.filter(
-          (f) => (decryptedNames[f.id] ?? f.name_encrypted ?? '').toLowerCase().includes(q)
+          (f) => (decryptedNames[f.id] ?? '').toLowerCase().includes(q)
         )
       : visibleFiles
     const withDates = list as Array<FileItem & { created_at?: string; updated_at?: string }>
@@ -634,7 +635,7 @@ export default function IMieiFilePage() {
         const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
         if (!blob) return
         const { invoke } = await import('@tauri-apps/api/core')
-        const fileName = decryptedNames[file.id] ?? file.name_encrypted ?? file.id
+        const fileName = decryptedNames[file.id] ?? 'file'
         const safeName = fileName.replace(/[/\\:*?"<>|]/g, '_')
         const arrayBuffer = await blob.arrayBuffer()
         const bytes = Array.from(new Uint8Array(arrayBuffer))
@@ -647,7 +648,7 @@ export default function IMieiFilePage() {
         const url = URL.createObjectURL(encryptedBlob)
         const a = document.createElement('a')
         a.href = url
-        a.download = (decryptedNames[file.id] ?? file.name_encrypted) + '.axs'
+        a.download = (decryptedNames[file.id] ?? 'file') + '.axs'
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
@@ -892,7 +893,7 @@ export default function IMieiFilePage() {
                     type="button"
                     className="ax-toolbar-btn ax-toolbar-btn-secondary"
                     onClick={() => {
-                      const items = allTableItems.filter((i) => selected.has(i.data.id)).map((i) => ({ type: i.type, id: i.data.id, name: i.type === 'folder' ? (decryptedFolderNames[i.data.id] ?? i.data.name_encrypted) : (decryptedNames[i.data.id] ?? i.data.name_encrypted) }))
+                      const items = allTableItems.filter((i) => selected.has(i.data.id)).map((i) => ({ type: i.type, id: i.data.id, name: i.type === 'folder' ? getSafeDisplayName(decryptedFolderNames[i.data.id]) : getSafeDisplayName(decryptedNames[i.data.id]) }))
                       if (items.length) setMoveModal({ items })
                     }}
                   >
@@ -903,7 +904,7 @@ export default function IMieiFilePage() {
                     type="button"
                     className="ax-toolbar-btn ax-toolbar-btn-secondary"
                     onClick={() => {
-                      const items = allTableItems.filter((i) => selected.has(i.data.id)).map((i) => ({ type: i.type as 'file' | 'folder', id: i.data.id, name: i.type === 'folder' ? (decryptedFolderNames[i.data.id] ?? i.data.name_encrypted) : (decryptedNames[i.data.id] ?? i.data.name_encrypted) }))
+                      const items = allTableItems.filter((i) => selected.has(i.data.id)).map((i) => ({ type: i.type as 'file' | 'folder', id: i.data.id, name: i.type === 'folder' ? getSafeDisplayName(decryptedFolderNames[i.data.id]) : getSafeDisplayName(decryptedNames[i.data.id]) }))
                       items.filter((x) => x.type === 'file').forEach((x) => { const f = filteredFiles.find((ff) => ff.id === x.id); if (f) void handleDownloadFile(f) })
                       items.filter((x) => x.type === 'folder').forEach((x) => { const folder = filteredFolders.find((ff) => ff.id === x.id); if (folder) void handleDownloadFolder(folder) })
                     }}
@@ -915,7 +916,7 @@ export default function IMieiFilePage() {
                     className="ax-toolbar-btn ax-toolbar-btn-secondary"
                     onClick={() => {
                       const first = allTableItems.find((i) => selected.has(i.data.id))
-                      if (first) setShareModal({ type: first.type, id: first.data.id, name: first.type === 'folder' ? (decryptedFolderNames[first.data.id] ?? first.data.name_encrypted) : (decryptedNames[first.data.id] ?? first.data.name_encrypted) })
+                      if (first) setShareModal({ type: first.type, id: first.data.id, name: first.type === 'folder' ? getSafeDisplayName(decryptedFolderNames[first.data.id]) : getSafeDisplayName(decryptedNames[first.data.id]) })
                     }}
                   >
                     Condividi
@@ -1012,7 +1013,7 @@ export default function IMieiFilePage() {
                   {allTableItems.map((item) => {
                     if (item.type === 'folder') {
                       const folder = item.data
-                      const folderName = decryptedFolderNames[folder.id] ?? folder.name_encrypted
+                      const folderName = getSafeDisplayName(decryptedFolderNames[folder.id])
                       const folderAny = folder as unknown as Record<string, unknown>
                       const created = folderAny.created_at ?? folder.created_at
                       const updated = folderAny.updated_at ?? folder.updated_at
@@ -1112,7 +1113,7 @@ export default function IMieiFilePage() {
                       )
                     }
                     const file = item.data as FileItem & { size?: number }
-                    const displayName = decryptedNames[file.id] ?? file.name_encrypted
+                    const displayName = getSafeDisplayName(decryptedNames[file.id])
                     const fileWithDates = file as FileItem & { created_at?: string; updated_at?: string }
                     const fileModifiedOrCreatedAt = fileWithDates.updated_at ?? fileWithDates.created_at
                     const fileChecked = selected.has(file.id)
@@ -1579,7 +1580,7 @@ export default function IMieiFilePage() {
                 {folders
                   ?.filter((f) => !moveModal.items.some((i) => i.type === 'folder' && i.id === f.id))
                   .map((folder) => {
-                    const folderName = decryptedFolderNames[folder.id] ?? folder.name_encrypted
+                    const folderName = getSafeDisplayName(decryptedFolderNames[folder.id])
                     return (
                       <button
                         key={folder.id}

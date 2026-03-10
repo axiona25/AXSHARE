@@ -106,7 +106,6 @@ export default function AppLayout({
   }, [hasSessionKey, syncContext?.syncState])
 
   const prevUnreadCountRef = useRef(0)
-  const lastNotifRef = useRef<string | null>(null)
   const [notificationToast, setNotificationToast] = useState<{ title: string; body: string } | null>(null)
   const notificationToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -130,66 +129,20 @@ export default function AppLayout({
     }
   }, [])
 
-  // Una sola lettura count+list al mount per toast "ultima notifica"; aggiornamenti da SWR (header) + SSE
+  // Al mount solo sincronizza il count: non mostrare toast per unread già presenti (evita che al refresh la stessa notifica "ricompaia"). Il toast per condivisione nuova arriva solo da SSE (axshare-notification-toast).
   useEffect(() => {
     if (!user) return
     let cancelled = false
-    const checkNotifications = async () => {
+    const syncUnreadCount = async () => {
       try {
         const { data: countData } = await notificationsApi.getCount()
         if (cancelled) return
-        const newCount = countData.unread_count
-        if (newCount > prevUnreadCountRef.current) {
-          const { data } = await notificationsApi.list({
-            unread_only: true,
-            page_size: 1,
-          })
-          if (cancelled) return
-          const latest = data.items?.[0]
-          if (latest && latest.id !== lastNotifRef.current) {
-            lastNotifRef.current = latest.id
-            if (latest.type === 'file_shared_with_me' || latest.type === 'folder_shared_with_me') {
-              setNotificationToast({ title: latest.title ?? 'Condivisione ricevuta', body: latest.body ?? '' })
-              if (notificationToastTimerRef.current) clearTimeout(notificationToastTimerRef.current)
-              notificationToastTimerRef.current = setTimeout(() => { setNotificationToast(null); notificationToastTimerRef.current = null }, 5000)
-            }
-            if (isRunningInTauri()) {
-              const { invoke } = await import('@tauri-apps/api/core')
-              switch (latest.type) {
-                case 'file_shared':
-                case 'share_link_created':
-                  await invoke('notify_file_shared', {
-                    sender: 'AXSHARE',
-                    filename: latest.body ?? 'un file',
-                  })
-                  break
-                case 'link_accessed':
-                  await invoke('show_notification', {
-                    payload: {
-                      title: '👁 File visualizzato',
-                      body: latest.body ?? 'Il tuo link è stato aperto',
-                      icon: null,
-                    },
-                  })
-                  break
-                default:
-                  await invoke('show_notification', {
-                    payload: {
-                      title: latest.title,
-                      body: latest.body ?? '',
-                      icon: null,
-                    },
-                  })
-              }
-            }
-          }
-        }
-        prevUnreadCountRef.current = newCount
+        prevUnreadCountRef.current = countData.unread_count
       } catch {
         // ignora errori di rete
       }
     }
-    checkNotifications()
+    syncUnreadCount()
     return () => {
       cancelled = true
     }

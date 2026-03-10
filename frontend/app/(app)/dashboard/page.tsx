@@ -16,6 +16,7 @@ import { useMyDashboard } from '@/hooks/useReports'
 import { useThumbnail } from '@/hooks/useThumbnail'
 import { searchApi, foldersApi, filesApi, shareLinksApi, trashApi, activityApi, permissionsApi, usersApi, type ShareLinkData } from '@/lib/api'
 import { getFileIcon, getFileLabel, getAxsFileIcon, getAxshareFileIcon, getFolderIcon, getFolderIconByIndex, getFolderColorIcon, FOLDER_ICON_OPTIONS } from '@/lib/fileIcons'
+import { getSafeDisplayName, NAME_PLACEHOLDER } from '@/lib/displayName'
 import { AppHeader } from '@/components/AppHeader'
 import { AppSidebar } from '@/components/AppSidebar'
 import { OnboardingBanner } from '@/components/OnboardingBanner'
@@ -523,12 +524,12 @@ export default function DashboardPage() {
   const searchResultsRaw = (searchData?.items ?? []) as FileItem[]
   const searchResults = searchQuery.trim()
     ? searchResultsRaw.filter((f) =>
-        f.name_encrypted?.toLowerCase().includes(searchQuery.toLowerCase())
+        (decryptedNames[f.id] ?? '').toLowerCase().includes(searchQuery.toLowerCase())
       )
     : searchResultsRaw
 
   function openFolder(folder: Folder) {
-    setBreadcrumb([{ id: folder.id, name: decryptedFolderNames[folder.id] ?? folder.name_encrypted }])
+    setBreadcrumb([{ id: folder.id, name: getSafeDisplayName(decryptedFolderNames[folder.id]) }])
     setCurrentFolderId(folder.id)
   }
 
@@ -982,7 +983,7 @@ export default function DashboardPage() {
   const filteredFiles = useMemo(() => {
     const list = q
       ? visibleFiles.filter(
-          (f) => (decryptedNames[f.id] ?? f.name_encrypted ?? '').toLowerCase().includes(q)
+          (f) => (decryptedNames[f.id] ?? '').toLowerCase().includes(q)
         )
       : visibleFiles
     const withDates = list as Array<FileItem & { created_at?: string; updated_at?: string }>
@@ -995,7 +996,7 @@ export default function DashboardPage() {
   const filteredFolders = useMemo(() => {
     const list = q
       ? folders.filter((folder) =>
-          (decryptedFolderNames[folder.id] ?? folder.name_encrypted ?? '').toLowerCase().includes(q)
+          (decryptedFolderNames[folder.id] ?? '').toLowerCase().includes(q)
         )
       : folders
     const withDates = list as Array<Folder & { created_at?: string; updated_at?: string }>
@@ -1319,9 +1320,7 @@ export default function DashboardPage() {
   const visibleSearchResults = useMemo(
     () =>
       searchResults.filter((file) =>
-        isValidFile(
-          decryptedNames[file.id] ?? file.name_encrypted ?? file.id
-        )
+        isValidFile(decryptedNames[file.id] ?? '')
       ),
     [searchResults, decryptedNames]
   )
@@ -1427,7 +1426,7 @@ export default function DashboardPage() {
       tempFileTimeoutsRef.current.delete(file.id)
     }
 
-    const fileName = decryptedNamesMap[file.id] ?? file.name_encrypted ?? file.id
+    const fileName = decryptedNamesMap[file.id] ?? 'file'
     const safeName = fileName.replace(/[/\\:*?"<>|]/g, '_')
 
     const arrayBuffer = await blob.arrayBuffer()
@@ -1480,7 +1479,7 @@ export default function DashboardPage() {
     try {
       const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
       if (!blob) return
-      const displayName = decryptedNames[file.id] ?? file.name_encrypted
+      const displayName = decryptedNames[file.id] ?? ''
       const rawMime = blob.type && blob.type !== 'application/octet-stream'
         ? blob.type
         : getMimeFromPath(displayName)
@@ -1547,7 +1546,7 @@ export default function DashboardPage() {
       const url = URL.createObjectURL(encryptedBlob)
       const a = document.createElement('a')
       a.href = url
-      const displayName = decryptedNames[file.id] ?? file.name_encrypted
+      const displayName = decryptedNames[file.id] ?? ''
       a.download = displayName + '.axs'
       document.body.appendChild(a)
       a.click()
@@ -2138,7 +2137,7 @@ export default function DashboardPage() {
                           .map((i) => ({
                             type: i.type,
                             id: i.data.id,
-                            name: i.type === 'folder' ? (decryptedFolderNames[i.data.id] ?? i.data.name_encrypted) : (decryptedNames[i.data.id] ?? i.data.name_encrypted),
+                            name: i.type === 'folder' ? getSafeDisplayName(decryptedFolderNames[i.data.id]) : getSafeDisplayName(decryptedNames[i.data.id]),
                           }))
                         if (items.length) setMoveModal({ items })
                       }}
@@ -2218,7 +2217,7 @@ export default function DashboardPage() {
                   {paginatedTableItems.map((item, idx) => {
                     if (item.type === 'folder') {
                       const folder = item.data
-                    const folderName = decryptedFolderNames[folder.id] ?? folder.name_encrypted
+                    const folderName = getSafeDisplayName(decryptedFolderNames[folder.id])
                     const isRenaming = renamingFolderId === folder.id
                     const folderAny = folder as unknown as Record<string, unknown>
                     const created = folderAny.created_at ?? folder.created_at
@@ -2363,7 +2362,7 @@ export default function DashboardPage() {
                   }
                   const file = item.data as FileItem
                   const globalIdx = (fileTablePage - 1) * ROWS_PER_PAGE + idx
-                  const displayName = decryptedNames[file.id] ?? file.name_encrypted
+                  const displayName = decryptedNames[file.id] ?? ''
                   const fileWithDates = file as FileItem & { created_at?: string; updated_at?: string }
                   const fileCreatedAt = fileWithDates.created_at
                   const fileUpdatedAt = fileWithDates.updated_at
@@ -2379,7 +2378,7 @@ export default function DashboardPage() {
                           onClick={() => handleOpen(file)}
                           onContextMenu={(e) => {
                             e.preventDefault()
-                            setContextMenu({ x: e.clientX, y: e.clientY, type: 'file', id: file.id, name: displayName })
+                            setContextMenu({ x: e.clientX, y: e.clientY, type: 'file', id: file.id, name: displayName || NAME_PLACEHOLDER })
                           }}
                         >
                           <td style={{ width: 44, paddingLeft: 20, paddingRight: 0, verticalAlign: 'middle' }} onClick={(e) => e.stopPropagation()}>
@@ -2463,7 +2462,7 @@ export default function DashboardPage() {
                                 />
                               ) : (
                                 <span className="file-name" data-testid={`file-name-${file.id}`}>
-                                  {displayName}
+                                  {getSafeDisplayName(displayName)}
                                   {autoSaving[file.id] && <span style={{ color: 'var(--ax-success)', fontSize: 11, fontWeight: 600, marginLeft: 6 }}>💾 Salvataggio...</span>}
                                   {openingFileId === file.id && <span style={{ color: 'var(--ax-blue)', fontSize: 11, fontWeight: 600, marginLeft: 6 }}>{openingMode === 'download' ? 'Download in corso...' : 'Apertura in corso...'}</span>}
                                 </span>
@@ -3120,7 +3119,7 @@ export default function DashboardPage() {
                 {folders
                   .filter((f) => !moveModal.items.some((i) => i.type === 'folder' && i.id === f.id))
                   .map((folder) => {
-                    const folderName = decryptedFolderNames[folder.id] ?? folder.name_encrypted
+                    const folderName = getSafeDisplayName(decryptedFolderNames[folder.id])
                     return (
                       <button
                         key={folder.id}
@@ -3170,7 +3169,7 @@ export default function DashboardPage() {
                   Home
                 </button>
                 {folders?.map((folder) => {
-                  const folderName = decryptedFolderNames[folder.id] ?? folder.name_encrypted
+                  const folderName = getSafeDisplayName(decryptedFolderNames[folder.id])
                   return (
                     <button
                       key={folder.id}
@@ -3297,7 +3296,7 @@ export default function DashboardPage() {
                         const url = URL.createObjectURL(blob)
                         const a = document.createElement('a')
                         a.href = url
-                        const name = previewFileId ? (decryptedNames[previewFileId] ?? previewName) : 'file'
+                        const name = previewFileId ? getSafeDisplayName(decryptedNames[previewFileId]) : 'file'
                         a.download = name
                         document.body.appendChild(a)
                         a.click()
@@ -3311,7 +3310,7 @@ export default function DashboardPage() {
                       const url = URL.createObjectURL(encryptedBlob)
                       const a = document.createElement('a')
                       a.href = url
-                      const name = previewFileId ? (decryptedNames[previewFileId] ?? previewName) : 'file'
+                      const name = previewFileId ? getSafeDisplayName(decryptedNames[previewFileId]) : 'file'
                       a.download = name + '.axs'
                       document.body.appendChild(a)
                       a.click()

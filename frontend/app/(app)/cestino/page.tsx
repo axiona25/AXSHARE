@@ -6,6 +6,7 @@ import Image from 'next/image'
 import { useAuthContext } from '@/context/AuthContext'
 import { useCrypto } from '@/hooks/useCrypto'
 import { getFileIcon, getFileLabel, getAxsFileIcon } from '@/lib/fileIcons'
+import { getSafeDisplayName } from '@/lib/displayName'
 import { trashApi } from '@/lib/api'
 import { AppHeader } from '@/components/AppHeader'
 import { AppSidebar } from '@/components/AppSidebar'
@@ -354,8 +355,8 @@ export default function CestinoPage() {
                   <tbody className="file-table-tbody-fixed">
                     {filteredItems.map((item) => {
                       const displayName = item.type === 'file'
-                        ? (decryptedFileNames[item.id] ?? item.name_encrypted)
-                        : (decryptedFolderNames[item.id] ?? item.name_encrypted)
+                        ? getSafeDisplayName(decryptedFileNames[item.id])
+                        : getSafeDisplayName(decryptedFolderNames[item.id])
                       const itemChecked = selected.has(item.id)
                       const isFile = item.type === 'file'
                       return (

@@ -77,6 +77,7 @@ async def list_shared_folders(
             "updated_at": r[0].updated_at.isoformat() if r[0].updated_at else None,
             "type": "folder",
             "permission_expires_at": r[4].isoformat() if r[4] else None,
+            "color": r[0].color,
         }
         for r in rows
     ]

@@ -10,7 +10,8 @@ import { useFileMutations } from '@/hooks/useFiles'
 import { useCrypto } from '@/hooks/useCrypto'
 import { usePinVerification, type UsePinVerificationReturn } from '@/hooks/usePinVerification'
 import { activityApi, filesApi, foldersApi, searchApi, shareLinksApi, permissionsApi, type ShareLinkData } from '@/lib/api'
-import { getFileIcon, getFileLabel, getAxsFileIcon, getFolderIcon } from '@/lib/fileIcons'
+import { getFileIcon, getFileLabel, getAxsFileIcon, getFolderColorIcon } from '@/lib/fileIcons'
+import { getSafeDisplayName, NAME_PLACEHOLDER } from '@/lib/displayName'
 import { AppHeader } from '@/components/AppHeader'
 import { AppSidebar } from '@/components/AppSidebar'
 import ConfirmModal from '@/components/ConfirmModal'
@@ -146,7 +147,7 @@ function getInitialsFromDisplayName(name: string | null | undefined): string {
 }
 
 type SharedFileItem = FileItem & { size?: number; shared_by?: string; access?: string; owner_email?: string | null; owner_display_name?: string | null; type?: 'file'; permission_expires_at?: string | null }
-type SharedFolderItem = { id: string; name_encrypted: string; owner_id: string; owner_email: string; owner_display_name: string; updated_at: string | null; type: 'folder'; permission_expires_at?: string | null }
+type SharedFolderItem = { id: string; name_encrypted: string; owner_id: string; owner_email: string; owner_display_name: string; updated_at: string | null; type: 'folder'; permission_expires_at?: string | null; color?: string | null }
 type SharedItem = SharedFileItem | SharedFolderItem
 
 export default function CondivisiPage() {
@@ -190,7 +191,7 @@ export default function CondivisiPage() {
         foldersApi.listChildren(currentFolderId),
         foldersApi.listFiles(currentFolderId),
       ])
-      const children = (childrenRes.data ?? []) as Array<{ id: string; name_encrypted: string; updated_at?: string | null }>
+      const children = (childrenRes.data ?? []) as Array<{ id: string; name_encrypted: string; updated_at?: string | null; color?: string | null }>
       const files = (filesRes.data ?? []) as SharedFileItem[]
       return {
         children: children.map((c) => ({
@@ -201,6 +202,7 @@ export default function CondivisiPage() {
           owner_display_name: '',
           updated_at: c.updated_at ?? null,
           type: 'folder' as const,
+          color: c.color ?? null,
         })) as SharedFolderItem[],
         files: files.map((f) => ({ ...f, type: 'file' as const })),
       }
@@ -491,7 +493,7 @@ export default function CondivisiPage() {
   const filteredFiles = useMemo(() => {
     const list = q
       ? sharedItems.filter((f) =>
-          (decryptedNames[f.id] ?? f.name_encrypted ?? '').toLowerCase().includes(q)
+          (decryptedNames[f.id] ?? '').toLowerCase().includes(q)
         )
       : sharedItems
     return [...list].sort((a, b) => {
@@ -511,7 +513,7 @@ export default function CondivisiPage() {
         const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
         if (!blob) return
         const { invoke } = await import('@tauri-apps/api/core')
-        const fileName = decryptedNames[file.id] ?? file.name_encrypted ?? file.id
+        const fileName = decryptedNames[file.id] ?? 'file'
         const safeName = fileName.replace(/[/\\:*?"<>|]/g, '_')
         const arrayBuffer = await blob.arrayBuffer()
         const bytes = Array.from(new Uint8Array(arrayBuffer))
@@ -524,7 +526,7 @@ export default function CondivisiPage() {
         const url = URL.createObjectURL(encryptedBlob)
         const a = document.createElement('a')
         a.href = url
-        a.download = (decryptedNames[file.id] ?? file.name_encrypted) + '.axs'
+        a.download = (decryptedNames[file.id] ?? 'file') + '.axs'
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
@@ -725,7 +727,7 @@ export default function CondivisiPage() {
                     {filteredFiles.map((file) => {
                       const item = file as SharedItem
                       const isFolder = item.type === 'folder'
-                      const displayName = decryptedNames[file.id] ?? file.name_encrypted
+                      const displayName = decryptedNames[file.id] ?? ''
                       const fileWithDates = file as SharedFileItem & { updated_at?: string; created_at?: string }
                       const fileModifiedOrCreatedAt = fileWithDates.updated_at ?? (item as SharedFolderItem).updated_at ?? null
                       const fileChecked = selected.has(file.id)
@@ -747,10 +749,10 @@ export default function CondivisiPage() {
                           }}
                           onClick={() => {
                             if (isFolder) {
-                              setBreadcrumbPath((prev) => [...prev, { id: file.id, name: displayName }])
+                              setBreadcrumbPath((prev) => [...prev, { id: file.id, name: displayName || NAME_PLACEHOLDER }])
                               return
                             }
-                            const ext = (displayName.split('.').pop() ?? '').toLowerCase()
+                            const ext = ((displayName || '').split('.').pop() ?? '').toLowerCase()
                             const isPdf = ext === 'pdf'
                             const isOffice = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)
                             if (isPdf || isOffice) {
@@ -766,7 +768,7 @@ export default function CondivisiPage() {
                           }}
                           onContextMenu={(e) => {
                             e.preventDefault()
-                            setContextMenu({ x: e.clientX, y: e.clientY, id: file.id, name: displayName })
+                            setContextMenu({ x: e.clientX, y: e.clientY, id: file.id, name: displayName || NAME_PLACEHOLDER })
                           }}
                         >
                           <td style={{ width: 44, paddingLeft: 20, paddingRight: 0, verticalAlign: 'middle' }} onClick={(e) => e.stopPropagation()}>
@@ -799,9 +801,9 @@ export default function CondivisiPage() {
                           <td>
                             <div className="file-name-cell">
                               <div className="file-type-icon-wrap">
-                                <Image src={isFolder ? getFolderIcon(displayName || '') : (displayName.endsWith('.axs') ? getAxsFileIcon(displayName) : getFileIcon(displayName, (file as FileItem).is_signed))} alt={isFolder ? 'Cartella' : getFileLabel(displayName)} width={52} height={52} className="file-type-icon" style={{ objectFit: 'contain', flexShrink: 0 }} unoptimized />
+                                <Image src={isFolder ? getFolderColorIcon((item as SharedFolderItem).color ?? 'yellow', isRunningInTauri()) : ((displayName || '').endsWith('.axs') ? getAxsFileIcon(displayName || 'file') : getFileIcon(displayName || 'file', (file as FileItem).is_signed))} alt={isFolder ? 'Cartella' : getFileLabel(displayName || 'file')} width={52} height={52} className="file-type-icon" style={{ objectFit: 'contain', flexShrink: 0 }} unoptimized />
                               </div>
-                              <span className="file-name">{displayName}</span>
+                              <span className="file-name">{getSafeDisplayName(displayName)}</span>
                             </div>
                           </td>
                           <td className="file-size-cell">
@@ -851,7 +853,7 @@ export default function CondivisiPage() {
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     const active = (linksByFileId[file.id] ?? []).filter((l) => l.is_active)
-                                    if (active[0]) setLinkDetailModal({ fileId: file.id, fileName: displayName, link: active[0] })
+                                    if (active[0]) setLinkDetailModal({ fileId: file.id, fileName: displayName || NAME_PLACEHOLDER, link: active[0] })
                                   }}
                                   title="Collegamento attivo"
                                   style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, padding: 0, border: 'none', borderRadius: 8, background: 'var(--ax-surface-1)', color: 'var(--ax-muted)', cursor: 'pointer' }}

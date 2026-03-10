@@ -9,6 +9,7 @@ import { useCrypto } from '@/hooks/useCrypto'
 import { usePinVerification } from '@/hooks/usePinVerification'
 import { activityApi, filesApi, trashApi, shareLinksApi } from '@/lib/api'
 import { getFileIcon, getFileLabel, getAxsFileIcon } from '@/lib/fileIcons'
+import { getSafeDisplayName } from '@/lib/displayName'
 import { AppHeader } from '@/components/AppHeader'
 import { AppSidebar } from '@/components/AppSidebar'
 import ConfirmModal from '@/components/ConfirmModal'
@@ -201,7 +202,7 @@ export default function MediaPage() {
     try {
       const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
       if (!blob) return
-      const displayName = decryptedNames[file.id] ?? file.name_encrypted
+      const displayName = decryptedNames[file.id] ?? ''
       const mime = (blob.type || '').toLowerCase()
       // Estensione da displayName decifrato (affidabile) — non dal nome cifrato
       const ext = (displayName.split('.').pop() ?? '').toLowerCase()
@@ -411,7 +412,7 @@ export default function MediaPage() {
   const filteredFiles = useMemo(() => {
     const list = q
       ? visibleFiles.filter((f) =>
-          (decryptedNames[f.id] ?? f.name_encrypted ?? '').toLowerCase().includes(q)
+          (decryptedNames[f.id] ?? '').toLowerCase().includes(q)
         )
       : visibleFiles
     const withDates = list as Array<FileItem & { updated_at?: string; created_at?: string }>
@@ -432,7 +433,7 @@ export default function MediaPage() {
         const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
         if (!blob) return
         const { invoke } = await import('@tauri-apps/api/core')
-        const fileName = decryptedNames[file.id] ?? file.name_encrypted ?? file.id
+        const fileName = decryptedNames[file.id] ?? 'file'
         const safeName = fileName.replace(/[/\\:*?"<>|]/g, '_')
         const arrayBuffer = await blob.arrayBuffer()
         const bytes = Array.from(new Uint8Array(arrayBuffer))
@@ -445,7 +446,7 @@ export default function MediaPage() {
         const url = URL.createObjectURL(encryptedBlob)
         const a = document.createElement('a')
         a.href = url
-        a.download = (decryptedNames[file.id] ?? file.name_encrypted) + '.axs'
+        a.download = (decryptedNames[file.id] ?? 'file') + '.axs'
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
@@ -638,7 +639,7 @@ export default function MediaPage() {
                   </thead>
                   <tbody className="file-table-tbody-fixed">
                     {filteredFiles.map((file) => {
-                      const displayName = decryptedNames[file.id] ?? file.name_encrypted
+                      const displayName = getSafeDisplayName(decryptedNames[file.id])
                       const fileWithDates = file as FileItem & { updated_at?: string; created_at?: string }
                       const fileModifiedOrCreatedAt = fileWithDates.updated_at ?? fileWithDates.created_at
                       const fileChecked = selected.has(file.id)

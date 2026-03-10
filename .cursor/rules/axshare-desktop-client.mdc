@@ -1,0 +1,17 @@
+---
+description: Client desktop AXSHARE (modale Tauri) — regole fisse. Applicare a ogni modifica alla UI desktop.
+globs:
+  - "frontend/app/desktop/**"
+  - "frontend/app/globals.css"
+---
+
+# Client desktop AXSHARE — regole fisse
+
+## Altezza modale e scroll
+
+- **Regola fissa**: se si aumenta l’altezza di una sezione (padding, nuovi blocchi, titoli, ecc.), l’altezza della **finestra** deve adattarsi automaticamente al contenuto.
+- **Non deve mai esserci scroll verticale** nella modale: tutto il contenuto deve restare visibile senza scroll.
+- Il ridimensionamento è già gestito in `frontend/app/desktop/page.tsx` con:
+  - `ResizeObserver` su `.ax-desktop-root` che chiama `set_main_window_size`
+  - comando Tauri `set_main_window_size` in `desktop/src-tauri/src/commands.rs`
+- Quando si modificano layout/padding/sezioni del client desktop, **non serve** chiedere all’utente di “ridimensionare la modale”: il codice deve continuare a adattare da solo l’altezza della finestra al contenuto.
