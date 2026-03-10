@@ -124,7 +124,6 @@ export function AppHeader({ searchValue, onSearchChange, searchLoading, hasShare
             <div className="ax-notif-dropdown" role="menu" aria-label="Notifiche">
               <div className="ax-notif-dropdown-header">
                 <span>Notifiche</span>
-                <a href="/notifications" className="ax-notif-dropdown-vedi-tutti" onClick={() => setNotifMenuOpen(false)}>Vedi tutti</a>
               </div>
               <div className="ax-notif-dropdown-list">
                 {notifications.length === 0 ? (

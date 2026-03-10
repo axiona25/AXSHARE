@@ -112,6 +112,12 @@ class Settings(BaseSettings):
     webauthn_rp_name: str = "AXSHARE"
     webauthn_origin: str = "http://localhost:3000"
 
+    # Rate limiting (NIS2 / OWASP). In development/localhost soglie alte o skip.
+    rate_limit_enabled: bool = True
+    rate_limit_skip_localhost: bool = True  # se True, 127.0.0.1 e ::1 non vengono limitati
+    rate_limit_max_requests: int = 200  # default per path non specifici (override in rate_limits.py)
+    rate_limit_window_seconds: int = 60
+
 
 @lru_cache()
 def get_settings() -> Settings:

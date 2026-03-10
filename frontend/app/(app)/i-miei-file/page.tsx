@@ -7,12 +7,14 @@ import { useRouter } from 'next/navigation'
 import { useAuthContext } from '@/context/AuthContext'
 import { useFiles, useFolders, useFileMutations } from '@/hooks/useFiles'
 import { useCrypto } from '@/hooks/useCrypto'
+import { usePinVerification } from '@/hooks/usePinVerification'
 import { activityApi, foldersApi, filesApi, trashApi, shareLinksApi, permissionsApi, type ShareLinkData } from '@/lib/api'
 import { getFileIcon, getFileLabel, getAxsFileIcon, getAxshareFileIcon, getFolderColorIcon, FOLDER_ICON_OPTIONS } from '@/lib/fileIcons'
 import { AppHeader } from '@/components/AppHeader'
 import { AppSidebar } from '@/components/AppSidebar'
 import ConfirmModal from '@/components/ConfirmModal'
 import { CreateLinkModal } from '@/components/CreateLinkModal'
+import { ManageAccessModal } from '@/components/ManageAccessModal'
 import { ShareBadge, getShareBadgeType } from '@/components/ShareBadge'
 import { isRunningInTauri } from '@/lib/tauri'
 import type { ActivityLog, FileItem, Folder, RootFileItem } from '@/types'
@@ -71,6 +73,11 @@ const ACTION_LABELS: Record<string, string> = {
   destroy: 'Eliminato definitivamente',
 }
 
+/** Azioni da mostrare in ATTIVITÀ: upload web, modifica, eliminazione, condivisione, collegamento, spostamento. Esclude download/sync virtual disk. */
+const ACTIVITY_ACTIONS_TO_SHOW = new Set([
+  'upload', 'rename', 'move', 'delete', 'share', 'share_link', 'share_revoke', 'trash', 'destroy', 'create_folder', 'update',
+])
+
 function formatActivityDate(createdAt: string): string {
   const d = new Date(createdAt)
   if (Number.isNaN(d.getTime())) return ''
@@ -96,6 +103,10 @@ function getActivityLabel(log: ActivityLog): string {
   return ACTION_LABELS[log.action] ?? log.action
 }
 
+const MEDIA_IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'])
+const MEDIA_AUDIO_EXT = new Set(['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'wma'])
+const MEDIA_VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v'])
+
 function getInitialsFromEmail(email: string): string {
   if (!email?.trim()) return '?'
   const part = email.split('@')[0]?.trim() || ''
@@ -120,8 +131,10 @@ function getInitialsFromDisplayName(name: string | null | undefined): string {
 /** Per i file con collegamenti: preferisce mostrare l’ultima attività di creazione/rimozione link invece dell’ultima generica (es. Scaricato). */
 function pickDisplayActivity(list: ActivityLog[]): ActivityLog | null {
   if (!list?.length) return null
-  const shareRelated = list.find((a) => a.action === 'share_link' || a.action === 'share_revoke')
-  return shareRelated ?? list[0] ?? null
+  const allowed = list.filter((a) => ACTIVITY_ACTIONS_TO_SHOW.has(a.action))
+  if (!allowed.length) return null
+  const shareRelated = allowed.find((a) => a.action === 'share_link' || a.action === 'share_revoke')
+  return shareRelated ?? allowed[0] ?? null
 }
 
 export default function IMieiFilePage() {
@@ -134,6 +147,7 @@ export default function IMieiFilePage() {
   const { deleteFile, deleteFolder, moveFile, moveFolder } = useFileMutations()
   const { user, hasSessionKey } = useAuthContext()
   const { downloadAndDecrypt, decryptFileNames, decryptFolderNames, getFileKeyBase64ForShare } = useCrypto()
+  const { requestPin, PinModal } = usePinVerification()
 
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({})
   const [decryptedFolderNames, setDecryptedFolderNames] = useState<Record<string, string>>({})
@@ -152,6 +166,7 @@ export default function IMieiFilePage() {
     id: string
     name: string
   } | null>(null)
+  const [manageAccessModal, setManageAccessModal] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [availableHeight, setAvailableHeight] = useState(600)
@@ -191,6 +206,11 @@ export default function IMieiFilePage() {
   const [linkModal, setLinkModal] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null)
   const [linksByFileId, setLinksByFileId] = useState<Record<string, ShareLinkData[]>>({})
   const [linkDetailModal, setLinkDetailModal] = useState<{ fileId: string; fileName: string; link: ShareLinkData } | null>(null)
+  const [showPreview, setShowPreview] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [previewType, setPreviewType] = useState<'image' | 'video' | 'audio'>('image')
+  const [previewName, setPreviewName] = useState('')
+  const [previewFileId, setPreviewFileId] = useState<string | null>(null)
   const [lastActivityByTargetId, setLastActivityByTargetId] = useState<Record<string, ActivityLog | null>>({})
   const [teamShareByTargetId, setTeamShareByTargetId] = useState<Record<string, boolean>>({})
   const [sharedUsersByTargetId, setSharedUsersByTargetId] = useState<Record<string, { id: string; email: string; display_name?: string }[]>>({})
@@ -225,7 +245,7 @@ export default function IMieiFilePage() {
       if (next.has(id)) next.delete(id)
       else next.add(id)
       if (typeof window !== 'undefined')
-        localStorage.setItem('axshare_favorites', JSON.stringify([...next]))
+        localStorage.setItem('axshare_favorites', JSON.stringify(Array.from(next)))
       return next
     })
   }, [])
@@ -411,7 +431,7 @@ export default function IMieiFilePage() {
           try {
             const res = await activityApi.getFolderActivity(id)
             const list = res.data ?? []
-            const first = list[0] ?? null
+            const first = (list as ActivityLog[]).find((log) => ACTIVITY_ACTIONS_TO_SHOW.has(log.action)) ?? null
             if (!cancelled) next[id] = first
           } catch {
             if (!cancelled) next[id] = null
@@ -551,11 +571,67 @@ export default function IMieiFilePage() {
   const allItemIds = useMemo(() => allTableItems.map((i) => i.data.id), [allTableItems])
   const allSelected = allItemIds.length > 0 && allItemIds.every((id) => selected.has(id))
 
+  function closePreview() {
+    setShowPreview(false)
+    setPreviewFileId(null)
+    if (previewUrl) URL.revokeObjectURL(previewUrl)
+    setPreviewUrl('')
+  }
+
+  async function handleOpenMedia(file: FileItem | RootFileItem) {
+    if (!hasSessionKey) return
+    try {
+      const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
+      if (!blob) return
+      const displayName = decryptedNames[file.id] ?? file.name_encrypted
+      const mime = (blob.type || '').toLowerCase()
+      const ext = (displayName.split('.').pop() ?? '').toLowerCase()
+      const isImage = mime.startsWith('image/') || MEDIA_IMAGE_EXT.has(ext)
+      const isVideo = mime.startsWith('video/') || MEDIA_VIDEO_EXT.has(ext)
+      const isAudio = mime.startsWith('audio/') || MEDIA_AUDIO_EXT.has(ext)
+      let finalBlob = blob
+      if (blob.type === 'application/octet-stream' && (isImage || isVideo || isAudio)) {
+        const FORCE_MIME: Record<string, string> = {
+          jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+          gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+          svg: 'image/svg+xml',
+          mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+          avi: 'video/x-msvideo', mkv: 'video/x-matroska', m4v: 'video/mp4',
+          mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4',
+          ogg: 'audio/ogg', flac: 'audio/flac', aac: 'audio/aac',
+        }
+        if (FORCE_MIME[ext]) {
+          finalBlob = new Blob([await blob.arrayBuffer()], { type: FORCE_MIME[ext] })
+        }
+      }
+      if (isImage || isVideo || isAudio) {
+        if (previewUrl) URL.revokeObjectURL(previewUrl)
+        const url = URL.createObjectURL(finalBlob)
+        setPreviewUrl(url)
+        setPreviewType(isImage ? 'image' : isVideo ? 'video' : 'audio')
+        setPreviewName(displayName)
+        setPreviewFileId(file.id)
+        setShowPreview(true)
+      } else {
+        const isPdf = ext === 'pdf'
+        const isOffice = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)
+        if (isPdf || isOffice) {
+          const url = URL.createObjectURL(blob)
+          window.open(url, '_blank')
+        } else {
+          void handleDownloadFile(file)
+        }
+      }
+    } catch {
+      showToast('Errore durante l\'apertura')
+    }
+  }
+
   async function handleDownloadFile(file: FileItem | RootFileItem) {
     if (!hasSessionKey) return
     try {
       if (isRunningInTauri()) {
-        const blob = await downloadAndDecrypt(file.id)
+        const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
         if (!blob) return
         const { invoke } = await import('@tauri-apps/api/core')
         const fileName = decryptedNames[file.id] ?? file.name_encrypted ?? file.id
@@ -589,7 +665,7 @@ export default function IMieiFilePage() {
       const JSZip = (await import('jszip')).default
       const zip = new JSZip()
       const manifest: { folders: { id: string; path: string; name_encrypted: string }[]; files: { id: string; path: string; name_encrypted: string }[] } = { folders: [], files: [] }
-      async function addFolderToZip(folderId: string, pathPrefix: string, folderNameEncrypted: string) {
+      const addFolderToZip = async (folderId: string, pathPrefix: string, folderNameEncrypted: string) => {
         const [filesResp, childrenResp] = await Promise.all([foldersApi.listFiles(folderId), foldersApi.listChildren(folderId)])
         const files = filesResp.data ?? []
         const children = childrenResp.data ?? []
@@ -763,6 +839,7 @@ export default function IMieiFilePage() {
 
   return (
     <div className="ax-dash-mockup-root">
+      <PinModal />
       <AppHeader searchValue={searchQuery} onSearchChange={setSearchQuery} hasShareNotification={hasShareNotif} onClearShareNotification={() => setHasShareNotif(false)} />
 
       <div className="app-body">
@@ -922,12 +999,13 @@ export default function IMieiFilePage() {
                           )}
                         </div>
                       </th>
-                      <th style={{ width: '40%' }}>NOME</th>
-                      <th style={{ width: '10%' }}>DIMENSIONE</th>
-                      <th style={{ width: '12%' }}>PROPRIETARIO</th>
-                      <th style={{ width: '12%' }}>STATO</th>
-                      <th style={{ width: '12%' }}>CONDIVISIONI</th>
-                      <th style={{ width: '26%', textAlign: 'left' }}>ATTIVITÀ</th>
+                      <th style={{ width: '35%' }}>NOME</th>
+                      <th style={{ width: '8%' }}>DIMENSIONE</th>
+                      <th style={{ width: '16%' }}>PROPRIETARIO</th>
+                      <th style={{ width: '8%' }}>STATO</th>
+                      <th style={{ width: '10%' }}>CONDIVISIONI</th>
+                      <th style={{ width: '12%', textAlign: 'left' }}>DATA CREAZIONE</th>
+                      <th style={{ width: '11%', textAlign: 'left' }}>ATTIVITÀ</th>
                     </tr>
                   </thead>
                   <tbody className="file-table-tbody-fixed">
@@ -935,7 +1013,7 @@ export default function IMieiFilePage() {
                     if (item.type === 'folder') {
                       const folder = item.data
                       const folderName = decryptedFolderNames[folder.id] ?? folder.name_encrypted
-                      const folderAny = folder as Record<string, unknown>
+                      const folderAny = folder as unknown as Record<string, unknown>
                       const created = folderAny.created_at ?? folder.created_at
                       const updated = folderAny.updated_at ?? folder.updated_at
                       const hasModifications = updated && created && String(updated) !== String(created)
@@ -995,22 +1073,33 @@ export default function IMieiFilePage() {
                           </td>
                           <td className="ax-condivisioni-cell">
                             {(() => {
-                              const users = sharedUsersByTargetId[folder.id] ?? []
-                              if (users.length === 0) return '—'
+                              const isOwner = folder.owner_id === user?.id
+                              const allUsers = sharedUsersByTargetId[folder.id] ?? []
+                              const users = isOwner ? allUsers : allUsers.filter((u) => u.id !== user?.id)
+                              if (users.length === 0) return <span style={{ color: 'var(--ax-muted)' }}>—</span>
                               const show = users.slice(0, 3)
-                              const hasMore = users.length > 3
+                              const extra = users.length - 3
                               return (
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                                   {show.map((u) => (
-                                    <span key={u.id} className="ax-shared-avatar" title={u.display_name?.trim() || u.email} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{getInitialsFromDisplayName(u.display_name) !== '?' ? getInitialsFromDisplayName(u.display_name) : getInitialsFromEmail(u.email)}</span>
+                                    <span key={u.id} className="ax-shared-avatar" title={u.display_name?.trim() || u.email} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: -4, border: '2px solid var(--ax-bg, #fff)' }}>
+                                      {getInitialsFromDisplayName(u.display_name) !== '?' ? getInitialsFromDisplayName(u.display_name) : getInitialsFromEmail(u.email)}
+                                    </span>
                                   ))}
-                                  {hasMore && <span style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>+</span>}
+                                  {extra > 0 && (
+                                    <span className="ax-shared-avatar-more" title={`Altri ${extra} utenti`} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: -4, border: '2px solid var(--ax-bg, #fff)' }}>
+                                      +{extra}
+                                    </span>
+                                  )}
                                 </span>
                               )
                             })()}
                           </td>
+                          <td className="modified-cell" title={created && (typeof created === 'string' || created instanceof Date) ? formatDateTimeIt(created) : undefined}>
+                            {created && (typeof created === 'string' || created instanceof Date) ? formatDateTimeIt(created) : '—'}
+                          </td>
                           <td style={{ textAlign: 'left' }} className="activity-cell activity-cell-one-line">
-                            {lastActivity ? (
+                            {lastActivity && ACTIVITY_ACTIONS_TO_SHOW.has(lastActivity.action) ? (
                               <>
                                 <span className="activity-label">{getActivityLabel(lastActivity)}</span>
                                 {formatActivityDate(lastActivity.created_at) ? (
@@ -1033,21 +1122,7 @@ export default function IMieiFilePage() {
                         key={file.id}
                         className="file-table-row-file"
                         style={{ background: fileChecked ? 'rgba(50,153,243,0.06)' : undefined }}
-                        onClick={() => {
-                          const ext = (displayName.split('.').pop() ?? '').toLowerCase()
-                          const isPdf = ext === 'pdf'
-                          const isOffice = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)
-                          if (isPdf || isOffice) {
-                            downloadAndDecrypt(file.id).then((blob) => {
-                              if (blob) {
-                                const url = URL.createObjectURL(blob)
-                                window.open(url, '_blank')
-                              }
-                            })
-                          } else {
-                            void handleDownloadFile(file)
-                          }
-                        }}
+                        onClick={() => void handleOpenMedia(file)}
                         onContextMenu={(e) => {
                           e.preventDefault()
                           setContextMenu({ x: e.clientX, y: e.clientY, type: 'file', id: file.id, name: displayName })
@@ -1087,10 +1162,29 @@ export default function IMieiFilePage() {
                           {formatFileSize((file as FileItem).size_bytes ?? file.size ?? 0)}
                         </td>
                           <td>
-                            <div className="owner-cell">
-                              <div className="owner-avatar">{user?.display_name?.trim() ? getInitialsFromDisplayName(user.display_name) : (user?.email ? user.email.split('@')[0].slice(0, 2) : 'U').toUpperCase()}</div>
-                              {user?.display_name?.trim() || 'Tu'}
-                            </div>
+                            {(file as FileItem).owner_id !== user?.id ? (
+                              <div className="owner-cell">
+                                <div
+                                  className="owner-avatar"
+                                  title={(file as FileItem).owner_display_name?.trim() || (file as FileItem).owner_email || 'Proprietario'}
+                                  style={{ background: 'var(--ax-blue, #3b82f6)', color: '#fff' }}
+                                >
+                                  {(file as FileItem).owner_display_name?.trim()
+                                    ? getInitialsFromDisplayName((file as FileItem).owner_display_name!)
+                                    : (file as FileItem).owner_email
+                                      ? (file as FileItem).owner_email!.split('@')[0].slice(0, 2).toUpperCase()
+                                      : '?'}
+                                </div>
+                                <span style={{ fontSize: 13 }}>
+                                  {(file as FileItem).owner_display_name?.trim() || (file as FileItem).owner_email || 'Sconosciuto'}
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="owner-cell">
+                                <div className="owner-avatar">{user?.display_name?.trim() ? getInitialsFromDisplayName(user.display_name) : (user?.email ? user.email.split('@')[0].slice(0, 2) : 'U').toUpperCase()}</div>
+                                {user?.display_name?.trim() || 'Tu'}
+                              </div>
+                            )}
                           </td>
                           <td>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1118,22 +1212,47 @@ export default function IMieiFilePage() {
                         </td>
                         <td className="ax-condivisioni-cell">
                           {(() => {
-                            const users = sharedUsersByTargetId[file.id] ?? []
-                            if (users.length === 0) return '—'
-                            const show = users.slice(0, 3)
-                            const hasMore = users.length > 3
+                            const isOwner = (file as FileItem).owner_id === user?.id
+                            const allUsers = sharedUsersByTargetId[file.id] ?? []
+                            // Se destinatario: escludi te stesso dalla lista
+                            const users = isOwner
+                              ? allUsers
+                              : allUsers.filter((u) => u.id !== user?.id)
+                            if (users.length === 0) return <span style={{ color: 'var(--ax-muted)' }}>—</span>
+                            const show = users.slice(0, 4)
+                            const extra = users.length - 4
                             return (
-                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                                 {show.map((u) => (
-                                  <span key={u.id} className="ax-shared-avatar" title={u.display_name?.trim() || u.email} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{getInitialsFromDisplayName(u.display_name) !== '?' ? getInitialsFromDisplayName(u.display_name) : getInitialsFromEmail(u.email)}</span>
+                                  <span
+                                    key={u.id}
+                                    className="ax-shared-avatar"
+                                    title={u.display_name?.trim() || u.email}
+                                    style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: -4, border: '2px solid var(--ax-bg, #fff)' }}
+                                  >
+                                    {getInitialsFromDisplayName(u.display_name) !== '?'
+                                      ? getInitialsFromDisplayName(u.display_name)
+                                      : getInitialsFromEmail(u.email)}
+                                  </span>
                                 ))}
-                                {hasMore && <span style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>+</span>}
+                                {extra > 0 && (
+                                  <span
+                                    className="ax-shared-avatar-more"
+                                    title={`Altri ${extra} utenti`}
+                                    style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: -4, border: '2px solid var(--ax-bg, #fff)' }}
+                                  >
+                                    +{extra}
+                                  </span>
+                                )}
                               </span>
                             )
                           })()}
                         </td>
+                        <td className="modified-cell" title={fileWithDates.created_at ? formatDateTimeIt(fileWithDates.created_at) : undefined}>
+                          {fileWithDates.created_at ? formatDateTimeIt(fileWithDates.created_at) : '—'}
+                        </td>
                         <td style={{ textAlign: 'left' }} className="activity-cell activity-cell-one-line">
-                          {lastActivity ? (
+                          {lastActivity && ACTIVITY_ACTIONS_TO_SHOW.has(lastActivity.action) ? (
                             <>
                               <span className="activity-label">{getActivityLabel(lastActivity)}</span>
                               {formatActivityDate(lastActivity.created_at) ? (
@@ -1149,6 +1268,7 @@ export default function IMieiFilePage() {
                   })}
                 {Array.from({ length: emptyRowsCount }).map((_, i) => (
                   <tr key={`empty-${i}`} className="file-table-empty-row" aria-hidden style={{ height: ROW_HEIGHT }}>
+                    <td style={{ borderBottom: 'none', padding: 0 }} />
                     <td style={{ borderBottom: 'none', padding: 0 }} />
                     <td style={{ borderBottom: 'none', padding: 0 }} />
                     <td style={{ borderBottom: 'none', padding: 0 }} />
@@ -1240,6 +1360,52 @@ export default function IMieiFilePage() {
               >
                 Rimuovi collegamento
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPreview && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '2rem',
+          }}
+        >
+          <div className="ax-preview-modal">
+            <div className="ax-preview-modal-header">
+              <span className="ax-preview-modal-title" title={previewName}>{previewName}</span>
+              <button
+                type="button"
+                className="ax-preview-modal-close"
+                onClick={closePreview}
+                aria-label="Chiudi anteprima"
+              >
+                <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div className="ax-preview-modal-body">
+              {previewType === 'image' && (
+                <img src={previewUrl} alt={previewName} />
+              )}
+              {previewType === 'video' && (
+                <video src={previewUrl} controls autoPlay>
+                  Il browser non supporta la riproduzione video.
+                </video>
+              )}
+              {previewType === 'audio' && (
+                <audio src={previewUrl} controls autoPlay>
+                  Il browser non supporta la riproduzione audio.
+                </audio>
+              )}
             </div>
           </div>
         </div>
@@ -1484,6 +1650,7 @@ export default function IMieiFilePage() {
           )}
           {[
             { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" /></svg>, label: 'Condividi', action: () => { setShareModal({ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name }); setContextMenu(null) } },
+            { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>, label: 'Gestisci accessi', action: () => { setManageAccessModal({ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name }); setContextMenu(null) } },
             { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>, label: 'Copia collegamento', action: () => { setLinkModal({ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name }); setContextMenu(null) } },
             { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>, label: 'Scarica', action: () => { if (contextMenu.type === 'file') { const f = filteredFiles.find((f) => f.id === contextMenu.id); if (f) void handleDownloadFile(f) } else { const folder = filteredFolders.find((f) => f.id === contextMenu.id); if (folder) void handleDownloadFolder(folder) }; setContextMenu(null) } },
             { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>, label: 'Rinomina', action: () => { showToast('Usa la dashboard per rinominare'); setContextMenu(null) } },
@@ -1514,6 +1681,16 @@ export default function IMieiFilePage() {
           </div>
         </div>,
         document.body
+      )}
+
+      {manageAccessModal && (
+        <ManageAccessModal
+          resourceType={manageAccessModal.type}
+          resourceId={manageAccessModal.id}
+          resourceName={manageAccessModal.name}
+          onClose={() => setManageAccessModal(null)}
+          showToast={showToast}
+        />
       )}
 
       <div className={`ax-dash-toast${toast ? ' show' : ''}`} role="status" aria-live="polite">

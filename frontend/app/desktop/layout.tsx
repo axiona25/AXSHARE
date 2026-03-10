@@ -7,8 +7,12 @@ export default function DesktopLayout({
   children: React.ReactNode
 }) {
   useEffect(() => {
+    document.documentElement.classList.add('ax-desktop-active')
     document.body.classList.add('ax-desktop-active')
-    return () => document.body.classList.remove('ax-desktop-active')
+    return () => {
+      document.documentElement.classList.remove('ax-desktop-active')
+      document.body.classList.remove('ax-desktop-active')
+    }
   }, [])
 
   useEffect(() => {

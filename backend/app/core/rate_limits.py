@@ -3,6 +3,7 @@ Limiti di rate per endpoint (NIS2 / OWASP).
 - Formato slowapi: "N/periodo" per @limiter.limit()
 - get_limit_for_path() per RateLimitMiddleware: (numero_richieste, finestra_secondi).
 """
+from typing import Tuple
 
 
 class RateLimit:
@@ -51,7 +52,7 @@ SEARCH_WINDOW = 60
 SEARCH_LIMIT = 30
 
 
-def get_limit_for_path(path: str) -> tuple[int, int]:
+def get_limit_for_path(path: str) -> Tuple[int, int]:
     """Restituisce (limit, window_seconds) per il path."""
     path = path.rstrip("/")
     if "/api/v1/auth/token/refresh" in path:

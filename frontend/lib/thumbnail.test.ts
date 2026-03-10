@@ -4,7 +4,7 @@ vi.mock('@/lib/crypto', () => ({
   generateKey: () => Promise.resolve(new Uint8Array(32).fill(1)),
   encryptFileChunked: async (data: Uint8Array) => data,
   decryptFileChunked: async (data: Uint8Array) => data,
-  bytesToBase64: (b: Uint8Array) => btoa(String.fromCharCode(...b)),
+  bytesToBase64: (b: Uint8Array) => btoa(String.fromCharCode(...Array.from(b))),
   bytesToHex: (b: Uint8Array) =>
     Array.from(b)
       .map((x) => x.toString(16).padStart(2, '0'))

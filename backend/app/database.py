@@ -10,11 +10,13 @@ import structlog
 logger = structlog.get_logger()
 settings = get_settings()
 
+# Nessun retry infinito: asyncpg non fa retry di default. Timeout connessione per fallire in fretta se PG è down.
 engine = create_async_engine(
     settings.database_url,
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
     echo=settings.debug,
+    connect_args={"timeout": 10},
 )
 
 AsyncSessionLocal = async_sessionmaker(

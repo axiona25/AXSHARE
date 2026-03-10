@@ -62,6 +62,8 @@ pub struct DiskFileEntry {
     #[serde(default)]
     #[serde(alias = "fileKeyBase64")]
     pub file_key_base64: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -137,6 +139,7 @@ async fn fetch_folder_tree(
                         is_folder: false,
                         folder_path: "/".to_string(),
                         file_key_base64: key,
+                        updated_at: None,
                     });
                 }
             }
@@ -173,6 +176,7 @@ async fn fetch_folder_tree(
             is_folder: true,
             folder_path: "/".to_string(),
             file_key_base64: None,
+            updated_at: None,
         });
         let parent_path = format!("/{}", name);
         queue.push(FolderJob {
@@ -212,6 +216,7 @@ async fn fetch_folder_tree(
                 is_folder: true,
                 folder_path: folder_path.clone(),
                 file_key_base64: None,
+                updated_at: None,
             });
             queue.push(FolderJob { id, parent_path: folder_path });
         }
@@ -251,6 +256,7 @@ async fn fetch_folder_tree(
                         is_folder: false,
                         folder_path,
                         file_key_base64: None,
+                        updated_at: None,
                     });
                 }
             }
@@ -281,6 +287,12 @@ impl VirtualDisk {
             last_disk_files: Arc::new(RwLock::new(Vec::new())),
             mounted: Arc::new(RwLock::new(false)),
         }
+    }
+
+    /// Imposta l'AppHandle per emettere eventi (es. disk-file-uploaded) al frontend.
+    #[cfg(target_os = "macos")]
+    pub async fn set_app_handle(&self, handle: tauri::AppHandle) {
+        *self.webdav.app_handle.write().await = Some(handle);
     }
 
     #[cfg(target_os = "macos")]
@@ -487,6 +499,7 @@ impl VirtualDisk {
                         size: f.size,
                         file_key_base64: k,
                         folder_path: f.folder_path.clone(),
+                        updated_at: f.updated_at,
                     });
                 }
             }

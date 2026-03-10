@@ -43,8 +43,13 @@ export default function SharePage() {
   const [password, setPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
   const [showPasswordModal, setShowPasswordModal] = useState(false)
+  const [linkPin, setLinkPin] = useState('')
+  const [linkPinError, setLinkPinError] = useState('')
+  const [showPinModal, setShowPinModal] = useState(false)
+  const [linkPinVerified, setLinkPinVerified] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [errorStatus, setErrorStatus] = useState<number | null>(null)
   const [time, setTime] = useState(() => new Date())
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [downloadInProgress, setDownloadInProgress] = useState(false)
@@ -61,15 +66,18 @@ export default function SharePage() {
       .getPublicInfo(token)
       .then((r) => {
         setInfo(r.data)
-        if (r.data.is_password_protected) {
+        if (r.data.requires_pin) {
+          setShowPinModal(true)
+        } else if (r.data.is_password_protected) {
           setShowPasswordModal(true)
         }
       })
       .catch((e: unknown) => {
         const err = e as { response?: { status?: number }; message?: string }
         const code = err?.response?.status
-        if (code === 404) setError('Link non valido o scaduto')
-        else if (code === 410) setError('Link non valido o scaduto')
+        setErrorStatus(code ?? null)
+        if (code === 404) setError('Link non valido.')
+        else if (code === 410) setError('Link scaduto')
         else setError(err?.message ?? 'Link non valido o scaduto')
       })
       .finally(() => setLoading(false))
@@ -77,8 +85,11 @@ export default function SharePage() {
 
   useEffect(() => {
     if (!info || info.is_password_protected || fileData) return
-    shareLinksApi.downloadViaLink(token).then((r) => setFileData(r.data)).catch(() => {})
-  }, [info, token, fileData])
+    if (info.requires_pin && !linkPinVerified) return
+    const pw = info.is_password_protected ? password : undefined
+    const pin = info.requires_pin ? linkPin : undefined
+    shareLinksApi.downloadViaLink(token, pw, pin).then((r) => setFileData(r.data)).catch(() => {})
+  }, [info, token, fileData, password, linkPinVerified, linkPin])
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000)
@@ -98,29 +109,52 @@ export default function SharePage() {
   const handlePasswordSubmit = useCallback(async () => {
     setPasswordError('')
     try {
-      const resp = await shareLinksApi.downloadViaLink(token, password)
+      const pin = info?.requires_pin && linkPinVerified ? linkPin : undefined
+      const resp = await shareLinksApi.downloadViaLink(token, password, pin)
       setFileData(resp.data)
       setShowPasswordModal(false)
     } catch {
       setPasswordError('Password non corretta')
     }
-  }, [token, password])
+  }, [token, password, info?.requires_pin, linkPinVerified, linkPin])
+
+  const handlePinSubmit = useCallback(async () => {
+    setLinkPinError('')
+    try {
+      const res = await shareLinksApi.verifyPin(token, linkPin)
+      if (res.data.valid) {
+        setLinkPinVerified(true)
+        setShowPinModal(false)
+        if (info?.is_password_protected) setShowPasswordModal(true)
+      } else {
+        setLinkPinError('PIN non corretto')
+      }
+    } catch {
+      setLinkPinError('PIN non corretto')
+    }
+  }, [token, linkPin, info?.is_password_protected])
 
   const getDecryptedBlob = useCallback(async (): Promise<Blob | null> => {
     if (!info || isExpired) return null
     if (info.is_password_protected && !fileData) return null
     const data = fileData
     if (!data?.file_key_encrypted_for_link) return null
-    const streamResp = await shareLinksApi.getStream(token, info.is_password_protected ? password : undefined)
+    const pin = info.requires_pin ? linkPin : undefined
+    const streamResp = await shareLinksApi.getStream(token, info.is_password_protected ? password : undefined, pin)
     const encrypted = new Uint8Array(streamResp.data)
     const keyBytes = base64ToBytes(data.file_key_encrypted_for_link)
     const plaintext = await decryptFileChunked(encrypted, keyBytes, '')
-    return new Blob([plaintext])
-  }, [info, token, password, fileData, isExpired])
+    return new Blob([plaintext as BlobPart])
+  }, [info, token, password, linkPin, fileData, isExpired])
 
   const handleDownload = useCallback(async () => {
     if (!info) return
     if (isExpired) return
+    if (info.requires_pin && !linkPinVerified) {
+      setShowPinModal(true)
+      setToast('Inserisci il PIN per sbloccare il download.')
+      return
+    }
     if (info.is_password_protected && !fileData) {
       setShowPasswordModal(true)
       setToast('Inserisci la password per sbloccare il download.')
@@ -161,6 +195,11 @@ export default function SharePage() {
 
   const handleOpenInNewTab = useCallback(async () => {
     if (!info || isExpired) return
+    if (info.requires_pin && !linkPinVerified) {
+      setShowPinModal(true)
+      setToast('Inserisci il PIN per aprire il file.')
+      return
+    }
     if (info.is_password_protected && !fileData) {
       setShowPasswordModal(true)
       setToast('Inserisci la password per aprire il file.')
@@ -212,8 +251,14 @@ export default function SharePage() {
     return (
       <div style={{ minHeight: '100vh', background: 'var(--ax-bg-secondary, #EEF4FB)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-sans)' }}>
         <div style={{ textAlign: 'center' }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600, color: 'var(--ax-text)' }}>Link non valido o scaduto</h1>
-          <p style={{ marginTop: 8, color: 'var(--ax-muted)' }}>{error}</p>
+          <h1 style={{ fontSize: 20, fontWeight: 600, color: 'var(--ax-text)' }}>
+            {errorStatus === 410 ? 'Link scaduto' : 'Link non valido'}
+          </h1>
+          <p style={{ marginTop: 8, color: 'var(--ax-muted)' }}>
+            {errorStatus === 410
+              ? 'Questo collegamento non è più valido. Contatta chi ti ha condiviso il file per ottenere un nuovo link.'
+              : error}
+          </p>
         </div>
       </div>
     )
@@ -319,6 +364,72 @@ export default function SharePage() {
           </>
         )}
       </div>
+
+      {showPinModal && info?.requires_pin && (
+        <div
+          className="ax-create-folder-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.4)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={() => setShowPinModal(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            style={{
+              background: 'var(--ax-surface-0)',
+              borderRadius: 16,
+              padding: 24,
+              maxWidth: 400,
+              width: '100%',
+              boxShadow: '0 8px 32px rgba(30,58,95,0.15)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img src="/Logo.png" alt="AXSHARE" style={{ height: 36, width: 'auto', objectFit: 'contain', marginBottom: 16 }} />
+            <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--ax-text)', marginBottom: 8 }}>Inserisci il PIN del collegamento</p>
+            <input
+              type="password"
+              inputMode="numeric"
+              placeholder="PIN"
+              value={linkPin}
+              onChange={(e) => setLinkPin(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handlePinSubmit()}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                borderRadius: 8,
+                border: '1px solid var(--ax-border)',
+                fontSize: 14,
+                marginBottom: 8,
+              }}
+            />
+            {linkPinError && <p style={{ fontSize: 12, color: 'var(--ax-error)', marginBottom: 8 }}>{linkPinError}</p>}
+            <button
+              type="button"
+              onClick={handlePinSubmit}
+              style={{
+                width: '100%',
+                padding: '10px 16px',
+                borderRadius: 8,
+                border: 'none',
+                background: 'var(--ax-blue)',
+                color: 'white',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Verifica PIN
+            </button>
+          </div>
+        </div>
+      )}
 
       {showPasswordModal && (
         <div

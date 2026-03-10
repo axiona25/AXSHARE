@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuthContext } from '@/context/AuthContext'
 import { useSyncContext } from '@/context/SyncContext'
-import { useNotifications } from '@/hooks/useNotifications'
+import { NotificationsProvider } from '@/context/NotificationsContext'
 import { SyncStatusBar } from '@/components/SyncStatusBar'
 import PinSetup from '@/components/PinSetup'
 import { usersApi, notificationsApi } from '@/lib/api'
@@ -20,7 +20,6 @@ export default function AppLayout({
   const router = useRouter()
   const { user, logout, isLoading, hasSessionKey, isRestoringSessionKey, setSessionKey, clearSessionKey } = useAuthContext()
   const syncContext = useSyncContext()
-  const { unreadCount } = useNotifications()
 
   const [showUnlockModal, setShowUnlockModal] = useState(false)
 
@@ -108,21 +107,52 @@ export default function AppLayout({
 
   const prevUnreadCountRef = useRef(0)
   const lastNotifRef = useRef<string | null>(null)
+  const [notificationToast, setNotificationToast] = useState<{ title: string; body: string } | null>(null)
+  const notificationToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Toast per notifiche di condivisione ricevuta (SSE → custom event da NotificationsContext)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ title?: string; body?: string }>).detail
+      if (detail?.title) {
+        if (notificationToastTimerRef.current) clearTimeout(notificationToastTimerRef.current)
+        setNotificationToast({ title: detail.title, body: detail.body ?? '' })
+        notificationToastTimerRef.current = setTimeout(() => {
+          setNotificationToast(null)
+          notificationToastTimerRef.current = null
+        }, 5000)
+      }
+    }
+    window.addEventListener('axshare-notification-toast', handler)
+    return () => {
+      window.removeEventListener('axshare-notification-toast', handler)
+      if (notificationToastTimerRef.current) clearTimeout(notificationToastTimerRef.current)
+    }
+  }, [])
+
+  // Una sola lettura count+list al mount per toast "ultima notifica"; aggiornamenti da SWR (header) + SSE
   useEffect(() => {
     if (!user) return
+    let cancelled = false
     const checkNotifications = async () => {
       try {
         const { data: countData } = await notificationsApi.getCount()
+        if (cancelled) return
         const newCount = countData.unread_count
         if (newCount > prevUnreadCountRef.current) {
           const { data } = await notificationsApi.list({
             unread_only: true,
             page_size: 1,
           })
+          if (cancelled) return
           const latest = data.items?.[0]
           if (latest && latest.id !== lastNotifRef.current) {
             lastNotifRef.current = latest.id
+            if (latest.type === 'file_shared_with_me' || latest.type === 'folder_shared_with_me') {
+              setNotificationToast({ title: latest.title ?? 'Condivisione ricevuta', body: latest.body ?? '' })
+              if (notificationToastTimerRef.current) clearTimeout(notificationToastTimerRef.current)
+              notificationToastTimerRef.current = setTimeout(() => { setNotificationToast(null); notificationToastTimerRef.current = null }, 5000)
+            }
             if (isRunningInTauri()) {
               const { invoke } = await import('@tauri-apps/api/core')
               switch (latest.type) {
@@ -160,8 +190,9 @@ export default function AppLayout({
       }
     }
     checkNotifications()
-    const interval = setInterval(checkNotifications, 15000)
-    return () => clearInterval(interval)
+    return () => {
+      cancelled = true
+    }
   }, [user])
 
   // Eventi dal tray (desktop): sync, blocca sessione, esci
@@ -278,11 +309,6 @@ export default function AppLayout({
             <Link href="/admin" data-testid="nav-admin">Admin</Link>
           </>
         )}
-        <span> | </span>
-        <Link href="/notifications" data-testid="nav-notifications">
-          Notifiche {unreadCount > 0 && `(${unreadCount})`}
-        </Link>
-        <span> | </span>
         <span data-testid="nav-user">{user?.email ?? ''}</span>
         <span> | </span>
         {typeof window !== 'undefined' && isDesktop() && process.env.NODE_ENV === 'development' && (
@@ -324,6 +350,27 @@ export default function AppLayout({
         </div>
       )}
 
+      {/* Toast notifica condivisione ricevuta (da SSE o da poll) */}
+      {notificationToast && (
+        <div className="ax-share-toast show" style={{ zIndex: 10001 }}>
+          <div className="ax-share-toast-header">
+            <div className="ax-share-toast-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ax-accent,#3b82f6)" strokeWidth="2.5">
+                <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                <polyline points="16 6 12 2 8 6" />
+                <line x1="12" y1="2" x2="12" y2="15" />
+              </svg>
+            </div>
+            <span className="ax-share-toast-title">{notificationToast.title}</span>
+            <button type="button" className="ax-share-toast-close" onClick={() => { setNotificationToast(null); if (notificationToastTimerRef.current) { clearTimeout(notificationToastTimerRef.current); notificationToastTimerRef.current = null } }} aria-label="Chiudi">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+          <div className="ax-share-toast-body">{notificationToast.body}</div>
+          <div className="ax-share-toast-progress" key={notificationToast.title} />
+        </div>
+      )}
+
       {/* Children (dashboard, settings, ecc.) — occupa tutto lo spazio; visibili solo quando user è pronto (auth + eventuale restore chiave in background) */}
       <main style={{
         flex: 1,
@@ -333,7 +380,7 @@ export default function AppLayout({
         overscrollBehaviorX: 'none',
         touchAction: 'pan-y',
       }}>
-        {user ? children : null}
+        {user ? <NotificationsProvider>{children}</NotificationsProvider> : null}
       </main>
     </div>
   )

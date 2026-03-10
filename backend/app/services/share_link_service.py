@@ -39,12 +39,20 @@ class ShareLinkService:
         expires_at: Optional[datetime] = None,
         max_downloads: Optional[int] = None,
         label: Optional[str] = None,
+        block_delete: bool = False,
+        require_pin: bool = False,
+        pin: Optional[str] = None,
     ) -> ShareLink:
         password_hash = None
         is_password_protected = False
         if password:
             password_hash = ShareLinkService.hash_password(password)
             is_password_protected = True
+
+        pin_hash = None
+        if require_pin and pin:
+            from app.crypto.kdf import hash_password_for_storage
+            pin_hash = hash_password_for_storage(pin)
 
         link = ShareLink(
             file_id=file_id,
@@ -56,6 +64,9 @@ class ShareLinkService:
             expires_at=expires_at,
             max_downloads=max_downloads,
             label=label,
+            block_delete=block_delete,
+            require_pin=require_pin,
+            pin_hash=pin_hash,
         )
         db.add(link)
         await db.commit()
@@ -69,9 +80,10 @@ class ShareLinkService:
         password: Optional[str],
         request: Request,
         increment_count: bool = True,
+        pin: Optional[str] = None,
     ) -> tuple[ShareLink, File]:
         """
-        Valida token e password. Se increment_count=True registra accesso e incrementa download_count.
+        Valida token, password e PIN (se require_pin). Se increment_count=True registra accesso e incrementa download_count.
         Restituisce (link, file) se valido, altrimenti raise HTTPException.
         """
         result = await db.execute(
@@ -120,6 +132,18 @@ class ShareLinkService:
             ):
                 await log_access("wrong_password", link.id)
                 raise HTTPException(status_code=401, detail="Password errata")
+
+        require_pin = getattr(link, "require_pin", False)
+        if require_pin:
+            pin_hash = getattr(link, "pin_hash", None)
+            if not pin_hash:
+                raise HTTPException(status_code=401, detail="PIN richiesto")
+            if not pin:
+                raise HTTPException(status_code=401, detail="PIN richiesto")
+            from app.crypto.kdf import verify_password as kdf_verify
+            if not kdf_verify(pin, pin_hash):
+                await log_access("wrong_pin", link.id)
+                raise HTTPException(status_code=401, detail="PIN non corretto")
 
         file_result = await db.execute(
             select(File).where(

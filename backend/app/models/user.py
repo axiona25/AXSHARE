@@ -38,6 +38,8 @@ class User(Base, UUIDMixin, TimestampMixin):
     private_key_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Salt per la derivazione chiave (Argon2id)
     key_derivation_salt: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Hash del PIN utente (Argon2id) per verifica require_pin su file condivisi
+    pin_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # WebAuthn credentials (JSON array cifrato)
     webauthn_credentials: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

@@ -1,5 +1,6 @@
 """AXSHARE FastAPI application — entry point."""
 
+import inspect
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -92,18 +93,35 @@ async def lifespan(app: FastAPI):
             logger.info("Vault: %s segreti caricati", len(secrets))
         except Exception as e:
             logger.warning("Vault caricamento segreti fallito: %s", e)
-    await init_db()
-    from app.services.storage import get_storage_service
 
-    storage = get_storage_service()
-    await storage.ensure_buckets()
+    try:
+        await init_db()
+    except Exception as e:
+        logger.warning("Database init non disponibile (PostgreSQL irraggiungibile o errore): %s", e)
+
+    try:
+        from app.services.storage import get_storage_service
+        storage = get_storage_service()
+        await storage.ensure_buckets()
+    except Exception as e:
+        logger.warning("MinIO/storage non disponibile (bucket check fallito): %s", e)
+
     logger.info("AXSHARE backend ready")
     yield
     logger.info("Shutting down AXSHARE API")
-    from app.services.redis_service import close_redis
-
-    await close_redis()
-    await engine.dispose()
+    try:
+        from app.services.redis_service import close_redis
+        await close_redis()
+    except Exception as e:
+        logger.warning("Chiusura Redis fallita: %s", e)
+    try:
+        # SQLAlchemy AsyncEngine: dispose() può essere sync (2.0) o async (alcune versioni).
+        # Usiamo il risultato della chiamata: se è awaitable lo attendiamo (più affidabile di iscoroutinefunction).
+        dispose_result = engine.dispose()
+        if inspect.isawaitable(dispose_result):
+            await dispose_result
+    except Exception as e:
+        logger.warning("Dispose engine DB fallito: %s", e)
     logger.info("Shutdown complete")
 
 

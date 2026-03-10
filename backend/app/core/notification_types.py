@@ -12,7 +12,10 @@ class NotificationType:
     SYNC_COMPLETE = "sync_complete"
     INVITE_RECEIVED = "invite_received"
     FILE_SHARED_WITH_ME = "file_shared_with_me"
+    FOLDER_SHARED_WITH_ME = "folder_shared_with_me"
     SHARE_REVOKED = "share_revoked"
+    PERMISSION_REVOKED = "permission_revoked"
+    PERMISSION_UPDATED = "permission_updated"
 
 
 class NotificationSeverity:

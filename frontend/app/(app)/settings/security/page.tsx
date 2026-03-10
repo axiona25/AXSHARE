@@ -27,6 +27,8 @@ export default function SecuritySettingsPage() {
   async function handlePinSetup(pin: string) {
     if (!user?.email || !user?.id) throw new Error('Utente non trovato')
     await keyManager.generateAndStoreWithPin(user.id, user.email, pin)
+    const { authApi } = await import('@/lib/api')
+    await authApi.setPin(pin)
     const resp = await usersApi.getPrivateKey()
     const bundle = resp.data?.encrypted_private_key
     if (!bundle) throw new Error('Chiave privata non trovata')

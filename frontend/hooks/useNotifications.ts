@@ -8,13 +8,13 @@ export function useNotifications(unreadOnly = false) {
   const { data, isLoading, error, mutate } = useSWR(
     `/notifications?unread_only=${unreadOnly}`,
     () => notificationsApi.list({ unread_only: unreadOnly }).then((r) => r.data),
-    { revalidateOnFocus: true, refreshInterval: 30000 }
+    { revalidateOnFocus: false, refreshInterval: 60000 }
   )
 
   const { data: countData, mutate: mutateCount } = useSWR(
     '/notifications/count',
     () => notificationsApi.getCount().then((r) => r.data),
-    { refreshInterval: 30000 }
+    { revalidateOnFocus: false, refreshInterval: 60000 }
   )
 
   const markRead = useCallback(

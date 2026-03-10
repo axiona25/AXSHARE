@@ -1,7 +1,6 @@
 'use client'
 
-import { useRouter, usePathname } from 'next/navigation'
-
+import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { useMyDashboard } from '@/hooks/useReports'
 
 function formatFileSize(bytes: number): string {
@@ -15,8 +14,10 @@ function formatFileSize(bytes: number): string {
 export function AppSidebar() {
   const router = useRouter()
   const pathname = usePathname() ?? ''
+  const searchParams = useSearchParams()
   const { dashboard: storageDashboard } = useMyDashboard()
 
+  const highlightId = searchParams?.get('highlight')
   const isDashboard = pathname === '/dashboard'
   const isIMieiFile = pathname === '/i-miei-file'
   const isCondivisi = pathname === '/condivisi'
@@ -51,13 +52,14 @@ export function AppSidebar() {
         </svg>
         I miei file
       </div>
+
       <div className="nav-section-label">Libreria</div>
       <div
         className={`nav-item${isCondivisi ? ' active' : ''}`}
-        onClick={() => router.push('/condivisi')}
+        onClick={() => router.push(highlightId ? `/condivisi?highlight=${encodeURIComponent(highlightId)}` : '/condivisi')}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push('/condivisi') } }}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(highlightId ? `/condivisi?highlight=${encodeURIComponent(highlightId)}` : '/condivisi') } }}
       >
         <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
           <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -92,6 +94,7 @@ export function AppSidebar() {
         </svg>
         Preferiti
       </div>
+
       <div className="nav-section-label">Altro</div>
       <div
         className={`nav-item${isCestino ? ' active' : ''}`}
@@ -105,6 +108,7 @@ export function AppSidebar() {
         </svg>
         Cestino
       </div>
+
       <div className="sidebar-footer">
         <div className="storage-label">
           Spazio usato <span className="storage-pct">{storageDashboard?.storage ? Math.min(100, Math.round((storageDashboard.storage.total_size_bytes / (storageDashboard.storage.storage_quota_bytes || 1)) * 100)) : 0}%</span>

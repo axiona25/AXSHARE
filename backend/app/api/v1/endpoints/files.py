@@ -21,6 +21,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, get_current_user_sse
 from app.models.file import File as FileModel, FileVersion, Folder
 from app.models.permission import Permission, PermissionLevel
+from app.models.share_link import ShareLink
 from app.models.user import User
 from app.core.audit_actions import AuditAction
 from app.core.metrics import file_uploads_total
@@ -30,6 +31,7 @@ from app.services.notification_service import NotificationService
 from app.services.destruct_service import DestructService
 from app.services.group_share_service import GroupShareService
 from app.services.storage import get_storage_service
+from app.services.permission_service import PermissionService as PermSvc
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -179,6 +181,8 @@ async def upload_file(
     )
     db.add(file_record)
     await db.commit()
+    if folder_uuid:
+        await PermSvc.apply_folder_permissions_to_file(db, file_record.id, folder_uuid)
     await event_bus.publish(
         str(current_user.id),
         {
@@ -215,16 +219,7 @@ async def _get_file_with_permission_check(
         raise HTTPException(status_code=404, detail="File non trovato")
     if file.owner_id == current_user.id:
         return file
-    now = datetime.now(timezone.utc)
-    perm_result = await db.execute(
-        select(Permission).where(
-            Permission.resource_file_id == file_id,
-            Permission.subject_user_id == current_user.id,
-            Permission.is_active.is_(True),
-            (Permission.expires_at.is_(None)) | (Permission.expires_at > now),
-        )
-    )
-    perm = perm_result.scalar_one_or_none()
+    perm = await PermSvc.get_permission_for_file(db, current_user.id, file_id)
     if perm is None:
         raise HTTPException(status_code=403, detail="Accesso negato al file")
     return file
@@ -249,16 +244,7 @@ async def _get_file_with_write_permission(
         raise HTTPException(status_code=404, detail="File non trovato")
     if file.owner_id == current_user.id:
         return file
-    now = datetime.now(timezone.utc)
-    perm_result = await db.execute(
-        select(Permission).where(
-            Permission.resource_file_id == file_id,
-            Permission.subject_user_id == current_user.id,
-            Permission.is_active.is_(True),
-            (Permission.expires_at.is_(None)) | (Permission.expires_at > now),
-        )
-    )
-    perm = perm_result.scalar_one_or_none()
+    perm = await PermSvc.get_permission_for_file(db, current_user.id, file_id)
     if perm is None or not _has_write_permission(file, current_user, perm):
         raise HTTPException(status_code=403, detail="Permesso di scrittura negato")
     return file
@@ -318,6 +304,8 @@ async def move_file(
             raise HTTPException(status_code=404, detail="Cartella di destinazione non trovata")
     file.folder_id = folder_uuid
     await db.commit()
+    if folder_uuid:
+        await PermSvc.apply_folder_permissions_to_file(db, file_id, folder_uuid)
     await event_bus.publish(
         str(current_user.id),
         {
@@ -328,6 +316,63 @@ async def move_file(
     )
     await log_activity(db, current_user.id, "move", "file", file_id, target_name=str(file.id))
     return {"moved": True, "folder_id": str(folder_uuid) if folder_uuid else None}
+
+
+@router.post("/{file_id}/copy")
+async def copy_file(
+    file_id: uuid.UUID,
+    body: MoveFileRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Copia un file in un'altra cartella (folder_id null = root)."""
+    file = await _get_file_with_permission_check(file_id, current_user, db)
+    if file.is_destroyed:
+        raise HTTPException(status_code=410, detail="File eliminato")
+    folder_uuid = None
+    if body.folder_id is not None and body.folder_id.strip() != "":
+        try:
+            folder_uuid = uuid.UUID(body.folder_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="folder_id non valido")
+        folder_result = await db.execute(
+            select(Folder).where(
+                Folder.id == folder_uuid,
+                Folder.owner_id == current_user.id,
+                Folder.is_destroyed.is_(False),
+            )
+        )
+        if folder_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Cartella di destinazione non trovata")
+    storage = get_storage_service()
+    encrypted_data = await storage.download_encrypted_file(file.storage_path)
+    new_file_id = uuid.uuid4()
+    new_storage_path = await storage.upload_encrypted_file(
+        file.owner_id,
+        new_file_id,
+        encrypted_data,
+    )
+    new_file = FileModel(
+        id=new_file_id,
+        owner_id=file.owner_id,
+        folder_id=folder_uuid,
+        name_encrypted=file.name_encrypted,
+        mime_type_encrypted=file.mime_type_encrypted,
+        file_key_encrypted=file.file_key_encrypted,
+        storage_path=new_storage_path,
+        size_bytes=file.size_bytes,
+        content_hash=file.content_hash,
+        encryption_iv=file.encryption_iv,
+        is_destroyed=False,
+        mime_category=file.mime_category,
+    )
+    new_file.content_hash = str(uuid.uuid4())
+    db.add(new_file)
+    await db.commit()
+    if folder_uuid:
+        await PermSvc.apply_folder_permissions_to_file(db, new_file.id, folder_uuid)
+    await log_activity(db, current_user.id, "copy", "file", new_file.id, target_name=str(new_file.id))
+    return {"copied": True, "new_file_id": str(new_file.id), "folder_id": str(folder_uuid) if folder_uuid else None}
 
 
 @router.get("/{file_id}")
@@ -388,23 +433,20 @@ async def get_file_dek(
     """Ritorna la DEK cifrata per l'utente (owner: file_key_encrypted; condiviso: resource_key_encrypted)."""
     file = await _get_file_with_permission_check(file_id, current_user, db)
     file_key_encrypted = file.file_key_encrypted
+    perm = None
     if file.owner_id != current_user.id:
-        now = datetime.now(timezone.utc)
-        perm_result = await db.execute(
-            select(Permission).where(
-                Permission.resource_file_id == file_id,
-                Permission.subject_user_id == current_user.id,
-                Permission.is_active.is_(True),
-                (Permission.expires_at.is_(None)) | (Permission.expires_at > now),
-            )
-        )
-        perm = perm_result.scalar_one_or_none()
+        perm = await PermSvc.get_permission_for_file(db, current_user.id, file_id)
         if perm and perm.resource_key_encrypted:
             file_key_encrypted = perm.resource_key_encrypted
+    requires_pin = bool(
+        file.owner_id != current_user.id and perm and getattr(perm, "require_pin", False)
+    )
     return {
         "file_key_encrypted": file_key_encrypted,
         "encryption_iv": file.encryption_iv,
         "mime_type_encrypted": file.mime_type_encrypted or "",
+        "owner_id": str(file.owner_id),
+        "requires_pin": requires_pin,
     }
 
 
@@ -602,6 +644,7 @@ async def get_version_key(
             "file_key_encrypted": file.file_key_encrypted,
             "encryption_iv": file.encryption_iv,
             "mime_type_encrypted": file.mime_type_encrypted or "",
+        "owner_id": str(file.owner_id),
         }
     result = await db.execute(
         select(FileVersion).where(
@@ -783,10 +826,29 @@ async def manual_destroy(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Distrugge manualmente un file (solo owner)."""
+    """Distrugge manualmente un file (solo owner; se condiviso con block_delete → 403)."""
     file = await db.get(FileModel, file_id)
-    if not file or file.owner_id != current_user.id:
+    if not file:
+        raise HTTPException(status_code=404, detail="File non trovato")
+    if file.owner_id != current_user.id:
+        perm = await PermSvc.get_permission_for_file(db, current_user.id, file_id)
+        if perm and getattr(perm, "block_delete", False):
+            raise HTTPException(status_code=403, detail="Non puoi eliminare questo file")
         raise HTTPException(status_code=403, detail="Non autorizzato")
+    # Proprietario: blocca se esiste un link pubblico attivo con block_delete
+    if file.owner_id == current_user.id:
+        link_check = await db.execute(
+            select(ShareLink).where(
+                ShareLink.file_id == file_id,
+                ShareLink.is_active.is_(True),
+            )
+        )
+        for link in link_check.scalars().all():
+            if getattr(link, "block_delete", False):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Non puoi eliminare un file con link pubblico attivo (opzione 'Non può eliminare' attiva).",
+                )
     destroyed = await DestructService.destroy_file(
         db, file_id, reason="manual"
     )

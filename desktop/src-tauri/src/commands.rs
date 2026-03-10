@@ -12,6 +12,8 @@ pub struct DecryptedFileEntry {
     pub is_folder: bool,
     pub folder_path: String,
     pub file_key_base64: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
 }
 
 #[tauri::command]
@@ -191,6 +193,7 @@ pub async fn update_disk_files_decrypted(
             is_folder: e.is_folder,
             folder_path: e.folder_path,
             file_key_base64: e.file_key_base64,
+            updated_at: e.updated_at,
         })
         .collect();
     state.virtual_disk.update_files(disk_entries).await

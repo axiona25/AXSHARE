@@ -28,6 +28,8 @@ export interface FileItem {
   updated_at: string
   /** True se il file (es. PDF) è stato firmato digitalmente. */
   is_signed?: boolean
+  owner_email?: string | null
+  owner_display_name?: string | null
 }
 
 /** Risposta GET /folders/root/files */
@@ -37,6 +39,7 @@ export interface RootFileItem {
   size: number
   current_version?: number
   updated_at: string | null
+  created_at: string | null
 }
 
 export interface ActivityLog {
@@ -73,6 +76,10 @@ export interface Permission {
   is_active: boolean
   granted_by_id: string
   resource_key_encrypted: string | null
+  block_delete?: boolean
+  block_link?: boolean
+  require_pin?: boolean
+  inherited_from_folder_id?: string | null
   /** Presente in lista permessi: email del destinatario per avatar/UI. */
   subject_user_email?: string | null
   /** Presente in lista permessi: nome e cognome del destinatario per avatar/UI. */

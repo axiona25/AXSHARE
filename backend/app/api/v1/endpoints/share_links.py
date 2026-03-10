@@ -5,8 +5,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
+import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,8 @@ from app.config import get_settings
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.file import File
+from app.models.permission import Permission
+from app.services.permission_service import PermissionService as PermSvc
 from app.models.share_link import ShareLink
 from app.models.user import User
 from app.schemas.share_link import (
@@ -35,6 +39,8 @@ sync_router = APIRouter(prefix="/sync", tags=["sync"])
 def _link_to_response(link: ShareLink) -> ShareLinkResponse:
     settings = get_settings()
     base = getattr(settings, "frontend_url", "http://localhost:3000")
+    now = datetime.now(timezone.utc)
+    is_expired = bool(link.expires_at and link.expires_at < now)
     return ShareLinkResponse(
         id=link.id,
         file_id=link.file_id,
@@ -42,12 +48,15 @@ def _link_to_response(link: ShareLink) -> ShareLinkResponse:
         is_password_protected=link.is_password_protected,
         require_recipient_pin=link.require_recipient_pin,
         expires_at=link.expires_at,
+        block_delete=getattr(link, "block_delete", False),
+        require_pin=getattr(link, "require_pin", False),
         max_downloads=link.max_downloads,
         download_count=link.download_count,
         is_active=link.is_active,
         label=link.label,
         created_at=link.created_at,
         share_url=f"{base}/share/{link.token}",
+        is_expired=is_expired,
     )
 
 
@@ -67,14 +76,19 @@ async def create_share_link(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(File).where(
-            File.id == file_id,
-            File.owner_id == current_user.id,
-            File.is_destroyed.is_(False),
-        )
+        select(File).where(File.id == file_id, File.is_destroyed.is_(False))
     )
-    if not result.scalar_one_or_none():
+    file = result.scalar_one_or_none()
+    if not file:
         raise HTTPException(status_code=404, detail="File non trovato")
+    if file.owner_id != current_user.id:
+        perm = await PermSvc.get_permission_for_file(db, current_user.id, file_id)
+        if perm and getattr(perm, "block_link", False):
+            raise HTTPException(status_code=403, detail="Non puoi creare link pubblici per questo file")
+        raise HTTPException(status_code=403, detail="Non autorizzato")
+
+    if body.require_pin and not (body.pin and body.pin.strip()):
+        raise HTTPException(status_code=400, detail="PIN obbligatorio quando 'Proteggi con PIN' è attivo")
 
     link = await ShareLinkService.create_link(
         db=db,
@@ -86,6 +100,9 @@ async def create_share_link(
         expires_at=body.expires_at,
         max_downloads=body.max_downloads,
         label=body.label,
+        block_delete=body.block_delete,
+        require_pin=body.require_pin,
+        pin=body.pin,
     )
     await AuditService.log_event(
         db,
@@ -119,15 +136,19 @@ async def list_share_links(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ShareLink)
-        .where(
-            ShareLink.file_id == file_id,
-            ShareLink.owner_id == current_user.id,
+    try:
+        result = await db.execute(
+            select(ShareLink)
+            .where(
+                ShareLink.file_id == file_id,
+                ShareLink.owner_id == current_user.id,
+            )
+            .order_by(ShareLink.created_at.desc())
         )
-        .order_by(ShareLink.created_at.desc())
-    )
-    return [_link_to_response(l) for l in result.scalars().all()]
+        return [_link_to_response(l) for l in result.scalars().all()]
+    except Exception as e:
+        structlog.get_logger().warning("list_share_links_error", file_id=str(file_id), error=str(e))
+        return []
 
 
 @router.delete("/share-links/{link_id}", status_code=204)
@@ -170,7 +191,7 @@ async def get_share_link_info(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Info pubblica sul link (senza scaricare il file)."""
+    """Info pubblica sul link (senza scaricare il file). Controlli: scadenza 410, requires_pin in response."""
     result = await db.execute(
         select(ShareLink).where(
             ShareLink.token == token,
@@ -181,19 +202,51 @@ async def get_share_link_info(
     if not link:
         raise HTTPException(status_code=404, detail="Link non trovato")
     now = datetime.now(timezone.utc)
-    if link.expires_at and link.expires_at < now:
+    is_expired = bool(link.expires_at and link.expires_at < now)
+    if is_expired:
         raise HTTPException(status_code=410, detail="Link scaduto")
     return {
         "token": token,
         "is_password_protected": link.is_password_protected,
         "require_recipient_pin": link.require_recipient_pin,
+        "requires_pin": getattr(link, "require_pin", False),
         "expires_at": (
             link.expires_at.isoformat() if link.expires_at else None
         ),
+        "is_expired": False,
         "max_downloads": link.max_downloads,
         "download_count": link.download_count,
         "label": link.label,
+        "block_delete": getattr(link, "block_delete", False),
+        "require_pin": getattr(link, "require_pin", False),
     }
+
+
+class VerifyShareLinkPinRequest(BaseModel):
+    pin: str
+
+
+@router.post("/public/share/{token}/verify-pin")
+async def verify_share_link_pin(
+    token: str,
+    body: VerifyShareLinkPinRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Verifica il PIN del link (pubblico, no JWT). Restituisce { valid: true } o { valid: false }."""
+    result = await db.execute(
+        select(ShareLink).where(
+            ShareLink.token == token,
+            ShareLink.is_active.is_(True),
+        )
+    )
+    link = result.scalar_one_or_none()
+    if not link or not getattr(link, "require_pin", False):
+        return {"valid": False}
+    pin_hash = getattr(link, "pin_hash", None)
+    if not pin_hash:
+        return {"valid": False}
+    from app.crypto.kdf import verify_password
+    return {"valid": verify_password(body.pin, pin_hash)}
 
 
 @router.post("/public/share/{token}/download")
@@ -205,7 +258,7 @@ async def download_via_share_link(
 ):
     """Restituisce metadati file (chiave, IV, nome cifrato) senza incrementare download_count."""
     link, file = await ShareLinkService.get_link_for_download(
-        db, token, body.password, request, increment_count=False
+        db, token, body.password, request, increment_count=False, pin=body.pin
     )
     await NotificationService.create_notification(
         db=db,
@@ -233,11 +286,12 @@ async def stream_share_link_file(
     token: str,
     request: Request,
     x_link_password: Optional[str] = Header(None, alias="X-Link-Password"),
+    x_link_pin: Optional[str] = Header(None, alias="X-Link-Pin"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Stream del file cifrato per link pubblico. Incrementa download_count. Password in header X-Link-Password se richiesta."""
+    """Stream del file cifrato per link pubblico. Incrementa download_count. Password in X-Link-Password, PIN in X-Link-Pin se richiesti."""
     link, file = await ShareLinkService.get_link_for_download(
-        db, token, x_link_password, request, increment_count=True
+        db, token, x_link_password, request, increment_count=True, pin=x_link_pin
     )
     storage = get_storage_service()
     encrypted_data = await storage.download_encrypted_file(file.storage_path)

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.file import File
+from app.models.user import User
 from app.models.metadata import FileTag
 from app.models.permission import Permission
 from app.schemas.search import FileSearchParams, SortField, SortOrder
@@ -126,33 +127,65 @@ class SearchService:
         result = await db.execute(query)
         files = result.scalars().all()
 
+        owner_ids = list({f.owner_id for f in files if f.owner_id != user_id})
+        owner_map: dict = {}
+        if owner_ids:
+            owner_result = await db.execute(
+                select(User.id, User.email, User.display_name_encrypted).where(User.id.in_(owner_ids))
+            )
+            for row in owner_result.all():
+                owner_map[str(row.id)] = {"email": row.email, "display_name": row.display_name_encrypted}
+
+        # Per shared_with_me: mappa file_id -> expires_at del permesso effettivo (priorità inherited)
+        permission_expires_map: dict = {}
+        if params.shared_with_me and files:
+            file_ids = [f.id for f in files]
+            perm_result = await db.execute(
+                select(Permission)
+                .where(
+                    Permission.subject_user_id == user_id,
+                    Permission.resource_file_id.in_(file_ids),
+                    Permission.is_active.is_(True),
+                    (Permission.expires_at.is_(None)) | (Permission.expires_at > now),
+                )
+                .order_by(Permission.resource_file_id, Permission.inherited_from_folder_id.desc().nulls_last())
+            )
+            for p in perm_result.scalars().all():
+                if p.resource_file_id and str(p.resource_file_id) not in permission_expires_map:
+                    permission_expires_map[str(p.resource_file_id)] = (
+                        p.expires_at.isoformat() if p.expires_at else None
+                    )
+
         items = []
         for f in files:
-            items.append(
-                {
-                    "id": str(f.id),
-                    "name_encrypted": f.name_encrypted,
-                    "size_bytes": f.size_bytes,
-                    "owner_id": str(f.owner_id),
-                    "folder_id": str(f.folder_id) if f.folder_id else None,
-                    "mime_category": f.mime_category,
-                    "is_starred": f.is_starred,
-                    "is_pinned": f.is_pinned,
-                    "color_label": f.color_label,
-                    "tags": [t.tag for t in f.tags],
-                    "download_count": f.download_count,
-                    "is_destroyed": f.is_destroyed,
-                    "self_destruct_after_downloads": f.self_destruct_after_downloads,
-                    "self_destruct_at": (
-                        f.self_destruct_at.isoformat()
-                        if f.self_destruct_at
-                        else None
-                    ),
-                    "version": f.version,
-                    "created_at": f.created_at.isoformat(),
-                    "updated_at": f.updated_at.isoformat(),
-                }
-            )
+            item = {
+                "id": str(f.id),
+                "name_encrypted": f.name_encrypted,
+                "size_bytes": f.size_bytes,
+                "owner_id": str(f.owner_id),
+                "folder_id": str(f.folder_id) if f.folder_id else None,
+                "mime_category": f.mime_category,
+                "is_starred": f.is_starred,
+                "is_pinned": f.is_pinned,
+                "color_label": f.color_label,
+                "tags": [t.tag for t in f.tags],
+                "download_count": f.download_count,
+                "is_destroyed": f.is_destroyed,
+                "self_destruct_after_downloads": f.self_destruct_after_downloads,
+                "self_destruct_at": (
+                    f.self_destruct_at.isoformat()
+                    if f.self_destruct_at
+                    else None
+                ),
+                "version": f.version,
+                "created_at": f.created_at.isoformat(),
+                "updated_at": f.updated_at.isoformat(),
+                "owner_email": owner_map.get(str(f.owner_id), {}).get("email"),
+                "owner_display_name": owner_map.get(str(f.owner_id), {}).get("display_name"),
+            }
+            if params.shared_with_me:
+                item["permission_expires_at"] = permission_expires_map.get(str(f.id))
+            items.append(item)
 
         return {
             "items": items,

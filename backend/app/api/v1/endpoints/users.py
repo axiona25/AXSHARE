@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -196,6 +196,36 @@ async def list_users(
     users = result.scalars().all()
     return [
         {"id": str(u.id), "email": u.email, "role": u.role.value}
+        for u in users
+    ]
+
+
+@router.get("/search")
+async def search_users(
+    q: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cerca utenti per email (esclude se stessi). Restituisce pubkey RSA."""
+    if len(q.strip()) < 2:
+        return []
+    pattern = f"%{q.strip().lower()}%"
+    result = await db.execute(
+        select(User)
+        .where(
+            User.is_active == True,
+            User.id != current_user.id,
+            func.lower(User.email).like(pattern),
+        )
+        .limit(10)
+    )
+    users = result.scalars().all()
+    return [
+        {
+            "id": str(u.id),
+            "email": u.email,
+            "public_key_rsa": u.public_key_rsa,
+        }
         for u in users
     ]
 

@@ -45,7 +45,7 @@ export default function SetupKeysPage() {
 
     // Nessune chiavi (o dopo reset): se le ha in IndexedDB e non forziamo form → redirect
     if (!forceShowSetupForm) {
-      hasKeys(user.id).then((has) => {
+      hasKeys().then((has) => {
         if (has) router.replace('/dashboard')
       })
     }
@@ -75,6 +75,8 @@ export default function SetupKeysPage() {
     if (!user?.email || !user?.id) throw new Error('Utente non trovato')
 
     await keyManager.generateAndStoreWithPin(user.id, user.email, pin)
+    const { authApi } = await import('@/lib/api')
+    await authApi.setPin(pin)
 
     const resp = await usersApi.getPrivateKey()
     const bundle = resp.data?.encrypted_private_key

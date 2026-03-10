@@ -28,7 +28,7 @@ export default function DesktopSyncPage() {
     const s = localStorage.getItem('axshare_sync_interval')
     if (s) {
       const n = parseInt(s, 10)
-      if (INTERVAL_OPTIONS.includes(n)) setIntervalSelect(n)
+      if ((INTERVAL_OPTIONS as readonly number[]).includes(n)) setIntervalSelect(n)
     }
   }, [])
 

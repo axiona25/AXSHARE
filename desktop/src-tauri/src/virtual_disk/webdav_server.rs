@@ -5,6 +5,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use tauri::Emitter;
+use tauri::Manager;
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Key, Nonce,
@@ -25,6 +27,7 @@ pub struct AxshareWebDAV {
     pub backend_url: String,
     pub temp_dir: std::path::PathBuf,
     pub local_db: Option<Arc<crate::local_db::LocalDb>>,
+    pub app_handle: tokio::sync::RwLock<Option<tauri::AppHandle>>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +39,8 @@ pub struct FileEntry {
     pub file_key_base64: String,
     /// Path della cartella padre (es. "/" o "/NomeCartella"). Usato per scrivere il file nella sottodirectory corretta.
     pub folder_path: String,
+    /// Timestamp Unix (secondi) per mtime del file su disco; None = lascia invariato.
+    pub updated_at: Option<i64>,
 }
 
 fn safe_filename(name: &str, file_id: &str) -> String {
@@ -97,6 +102,7 @@ impl AxshareWebDAV {
             backend_url,
             temp_dir,
             local_db,
+            app_handle: tokio::sync::RwLock::new(None),
         }
     }
 
@@ -224,6 +230,13 @@ impl AxshareWebDAV {
                     log::error!("[WEBDAV] write FAIL {} -> {:?}: {}", safe, path, e);
                     eprintln!("[WEBDAV] write FAIL file={} path={:?}: {}", safe, path, e);
                     continue;
+                }
+            }
+
+            if let Some(ts) = f.updated_at {
+                let ft = filetime::FileTime::from_unix_time(ts, 0);
+                if let Err(e) = filetime::set_file_mtime(&path, ft) {
+                    log::warn!("[WEBDAV] set_file_mtime {}: {}", path.display(), e);
                 }
             }
 
@@ -440,6 +453,7 @@ impl AxshareWebDAV {
                 size: data.len() as u64,
                 file_key_base64: key_b64.clone(),
                 folder_path: "/".to_string(),
+                updated_at: None,
             });
         }
 
@@ -459,6 +473,15 @@ impl AxshareWebDAV {
         }
 
         log::info!("[WEBDAV] File caricato: {} ({})", filename, file_id);
+
+        // Notifica il frontend del nuovo file caricato
+        if let Some(ref handle) = *self.app_handle.read().await {
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.emit("disk-file-uploaded", file_id.clone());
+                log::info!("[WEBDAV] Emesso disk-file-uploaded per {}", file_id);
+            }
+        }
+
         Ok(file_id)
     }
 

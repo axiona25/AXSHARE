@@ -57,6 +57,15 @@ class Permission(Base, UUIDMixin, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("axshare.users.id"), nullable=False
     )
 
+    block_delete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    block_link: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    require_pin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Se non null, il permesso su file è ereditato da questa cartella (cartella vince su permesso diretto)
+    inherited_from_folder_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("axshare.folders.id", ondelete="SET NULL"), nullable=True
+    )
+
     subject_user: Mapped[Optional["User"]] = relationship(
         "User", back_populates="permissions", foreign_keys=[subject_user_id]
     )

@@ -2966,20 +2966,22 @@ input[data-testid="search-input"]:focus {
 }
 
 /* Con client desktop attivo: niente scroll sulla pagina */
+html.ax-desktop-active,
 body.ax-desktop-active {
-  overflow: hidden !important;
   height: 100%;
+  overflow: hidden !important;
 }
 
-/* ─── AXSHARE Desktop Client: altezza automatica, finestra si ridimensiona (no scroll) ─ */
+/* ─── AXSHARE Desktop Client: root e container riempiono la finestra così l'elenco RECENTI può espandersi ─ */
 .ax-desktop-root {
   width: 760px;
-  height: auto;
-  min-height: 720px;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   position: relative;
   font-family: var(--font-plus-jakarta, 'Plus Jakarta Sans'), system-ui, sans-serif;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   background: #ffffff;
@@ -3008,12 +3010,13 @@ body.ax-desktop-active {
   position: relative;
   z-index: 10;
   width: 100%;
-  height: auto;
+  flex: 1 1 0;
   min-height: 0;
   padding: 0 12px 12px 12px;
   box-sizing: border-box;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: center;
   overflow: hidden;
 }
@@ -3026,9 +3029,9 @@ body.ax-desktop-active {
   box-shadow: 0 4px 24px rgba(30,58,95,0.08);
   width: 100%;
   max-width: 736px;
-  height: auto;
-  max-height: none;
-  overflow: hidden;
+  height: 100%;
+  max-height: 700px;
+  overflow-y: auto;
   overscroll-behavior: none;
   color: var(--ax-text);
   display: flex;
@@ -3040,7 +3043,7 @@ body.ax-desktop-active {
   --ax-bg-primary: var(--ax-surface-0);
   --ax-bg-secondary: var(--ax-surface-1);
   width: 100%;
-  height: auto;
+  flex: 1 1 0;
   min-height: 0;
   background: transparent;
   font-family: inherit;
@@ -3171,33 +3174,52 @@ body.ax-desktop-active {
   padding: 8px 10px;
 }
 
+.ax-desktop-session-left {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 .ax-desktop-session-line {
   font-size: 13px;
   font-weight: 600;
   color: var(--ax-navy);
-  margin-bottom: 4px;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ax-desktop-session-line .ax-desktop-session-line-icon {
+  flex-shrink: 0;
+  color: var(--ax-navy);
 }
 
 .ax-desktop-session-email {
   font-size: 12px;
-  color: var(--ax-text-muted);
-  margin-bottom: 6px;
+  color: var(--ax-text);
+  margin-bottom: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ax-desktop-session-keys {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ax-text-muted);
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .ax-desktop-session-key-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
 }
 
 .ax-desktop-session-key-label {
@@ -3207,8 +3229,8 @@ body.ax-desktop-active {
 
 .ax-desktop-session-key-row .ax-desktop-dot {
   flex-shrink: 0;
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   margin: 0;
 }
 
@@ -3218,6 +3240,45 @@ body.ax-desktop-active {
   margin-bottom: 10px;
 }
 
+.ax-desktop-disk-left {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.ax-desktop-disk-line {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ax-navy);
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ax-desktop-disk-line .ax-desktop-disk-line-icon {
+  flex-shrink: 0;
+  color: var(--ax-navy);
+}
+
+.ax-desktop-disk-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ax-text-muted);
+  margin-top: 4px;
+}
+
+.ax-desktop-disk-status .ax-desktop-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
 .ax-desktop-disk-row {
   display: flex;
   align-items: center;
@@ -3225,6 +3286,15 @@ body.ax-desktop-active {
   gap: 10px;
   width: 100%;
   min-height: 0;
+}
+
+.ax-desktop-card.ax-desktop-disk-row .ax-desktop-disk-left .ax-desktop-disk-path {
+  margin-bottom: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
 }
 
 .ax-desktop-card.ax-desktop-disk-row .ax-desktop-disk-path {
@@ -3295,6 +3365,30 @@ body.ax-desktop-active {
   object-fit: contain;
   display: block;
   pointer-events: none;
+}
+
+.ax-desktop-disk-spinner {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: ax-spin 0.8s linear infinite;
+  z-index: 1;
+  pointer-events: none;
+}
+
+@keyframes ax-spin {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
 }
 
 .ax-desktop-disk-icon.ax-desktop-disk-icon-active {
@@ -3416,6 +3510,14 @@ body.ax-desktop-active {
   background: #ef4444;
 }
 
+.ax-desktop-dot-grey {
+  background: #9ca3af;
+}
+
+.ax-desktop-dot-sync-idle {
+  background: var(--ax-sky);
+}
+
 .ax-desktop-dot-warn {
   background: #f59e0b;
 }
@@ -3454,7 +3556,7 @@ body.ax-desktop-active {
   display: flex;
   flex-direction: column;
   gap: 0;
-  flex: 0 0 auto;
+  flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
   overscroll-behavior: none;
@@ -3466,11 +3568,17 @@ body.ax-desktop-active {
   flex-shrink: 0;
 }
 
-/* Sezioni con liste: contenitore per lo scroll interno (solo liste scrollano) */
+/* Sezione RECENTI: occupa lo spazio disponibile, lista con scroll interno */
 .ax-desktop-dashboard-body .ax-desktop-section.ax-desktop-section-has-list {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.ax-desktop-dashboard-body .ax-desktop-section.ax-desktop-section-has-list > .ax-desktop-section-title {
+  flex-shrink: 0;
 }
 
 .ax-desktop-dashboard-body .ax-desktop-section:last-of-type {
@@ -3570,12 +3678,13 @@ body.ax-desktop-active {
   white-space: nowrap;
 }
 
-/* Lista attività file: unica altra area scrollabile */
+/* Lista attività file (RECENTI): altezza massima fissa così Logout e bordo modale restano visibili */
 .ax-desktop-activity-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  max-height: 100px;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
 }

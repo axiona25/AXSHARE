@@ -54,7 +54,7 @@ interface UseCryptoReturn {
     fileOrBlob: File | Blob,
     versionComment?: string
   ) => Promise<{ version: number } | null>
-  downloadAndDecrypt: (fileId: string) => Promise<Blob | null>
+  downloadAndDecrypt: (fileId: string, fileName?: string, options?: { onRequiresPin?: () => Promise<boolean> }) => Promise<Blob | null>
   downloadVersionAndDecrypt: (
     fileId: string,
     versionNumber: number
@@ -69,6 +69,8 @@ interface UseCryptoReturn {
   decryptFileNamesAndKeys: (
     files: { id: string; name_encrypted: string }[]
   ) => Promise<{ names: Record<string, string>; keysBase64: Record<string, string> }>
+  /** Cifra un nuovo nome file con la DEK del file (per rinomina). Restituisce name_encrypted in base64. */
+  encryptFileNameForRename: (fileId: string, newPlainName: string) => Promise<string | null>
   shareFile: (
     fileId: string,
     recipientUserId: string,
@@ -76,6 +78,13 @@ interface UseCryptoReturn {
   ) => Promise<boolean>
   /** Chiave file in base64 per link pubblico (share link). Restituisce null se sessione non attiva. */
   getFileKeyBase64ForShare: (fileId: string) => Promise<string | null>
+  /** Chiave cartella in base64 per condivisione con utenti (resource_key_encrypted). */
+  getFolderKeyBase64ForShare: (folderId: string) => Promise<string | null>
+  /** Chiavi file del sottoalbero cifrate per un destinatario (per POST /permissions con cartella). */
+  getFileKeysEncryptedForFolderShare: (
+    folderId: string,
+    recipientPublicKeyPem: string
+  ) => Promise<Record<string, string>>
   clearError: () => void
 }
 
@@ -232,7 +241,11 @@ export function useCrypto(): UseCryptoReturn {
   )
 
   const downloadAndDecrypt = useCallback(
-    async (fileId: string): Promise<Blob | null> => {
+    async (
+      fileId: string,
+      fileName?: string,
+      options?: { onRequiresPin?: () => Promise<boolean> }
+    ): Promise<Blob | null> => {
       if (!user) {
         setError('Non autenticato')
         return null
@@ -250,6 +263,14 @@ export function useCrypto(): UseCryptoReturn {
           filesApi.download(fileId),
           filesApi.getKey(fileId),
         ])
+        const requiresPin = keyResp.data.requires_pin === true
+        if (requiresPin) {
+          const allowed = options?.onRequiresPin ? await options.onRequiresPin() : false
+          if (!allowed) {
+            setIsLoading(false)
+            return null
+          }
+        }
         let encryptedData = new Uint8Array(downloadResp.data as ArrayBuffer)
         const drmInfo = parseDrmHeader(encryptedData)
         console.log('[DOWNLOAD] Total bytes:', encryptedData.length)
@@ -277,12 +298,35 @@ export function useCrypto(): UseCryptoReturn {
           const mimeEnc = keyResp.data.mime_type_encrypted
           if (mimeEnc && mimeEnc.length > 0) {
             const mimeBytes = base64ToBytes(mimeEnc)
-            const mimeDec = await decryptFileChunked(mimeBytes, fileKey, user.id)
+            const mimeDec = await decryptFileChunked(mimeBytes, fileKey, (keyResp.data as { owner_id?: string }).owner_id ?? user.id)
             mimeType = new TextDecoder().decode(mimeDec)
-            console.log('[DOWNLOAD] MIME type decifrato:', mimeType)
           }
         } catch {
-          // usa default
+          // fallback: ricava MIME dall'estensione del nome cifrato/decifrato
+        }
+
+        // Se il MIME è ancora generico, prova a ricavarlo dall'estensione
+        if (!mimeType || mimeType === 'application/octet-stream') {
+          const EXT_MIME: Record<string, string> = {
+            jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+            gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+            svg: 'image/svg+xml', ico: 'image/x-icon',
+            mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+            avi: 'video/x-msvideo', mkv: 'video/x-matroska', m4v: 'video/mp4',
+            mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4',
+            ogg: 'audio/ogg', flac: 'audio/flac', aac: 'audio/aac',
+            pdf: 'application/pdf',
+            doc: 'application/msword',
+            docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            xls: 'application/vnd.ms-excel',
+            xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ppt: 'application/vnd.ms-powerpoint',
+            pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          }
+          const ext = (fileName ?? '').split('.').pop()?.toLowerCase() ?? ''
+          if (ext && EXT_MIME[ext]) {
+            mimeType = EXT_MIME[ext]
+          }
         }
 
         return new Blob([decrypted as BlobPart], { type: mimeType })
@@ -331,7 +375,7 @@ export function useCrypto(): UseCryptoReturn {
           const mimeEnc = keyResp.data.mime_type_encrypted
           if (mimeEnc?.length) {
             const mimeBytes = base64ToBytes(mimeEnc)
-            const mimeDec = await decryptFileChunked(mimeBytes, fileKey, user.id)
+            const mimeDec = await decryptFileChunked(mimeBytes, fileKey, (keyResp.data as { owner_id?: string }).owner_id ?? user.id)
             mimeType = new TextDecoder().decode(mimeDec)
           }
         } catch {
@@ -410,6 +454,51 @@ export function useCrypto(): UseCryptoReturn {
     [user, sessionPrivateKey]
   )
 
+  const getFolderKeyBase64ForShare = useCallback(
+    async (folderId: string): Promise<string | null> => {
+      if (!user || !sessionPrivateKey) return null
+      try {
+        const keyResp = await foldersApi.getKey(folderId)
+        const folderKey = await decryptFileKeyWithRSA(
+          keyResp.data.folder_key_encrypted,
+          sessionPrivateKey
+        )
+        return bytesToBase64(folderKey)
+      } catch {
+        return null
+      }
+    },
+    [user, sessionPrivateKey]
+  )
+
+  /** Chiavi file nel sottoalbero della cartella, cifrate con la public key del destinatario (per grant cartella). */
+  const getFileKeysEncryptedForFolderShare = useCallback(
+    async (
+      folderId: string,
+      recipientPublicKeyPem: string
+    ): Promise<Record<string, string>> => {
+      if (!user || !sessionPrivateKey) return {}
+      const fileIds = await foldersApi.getFileIdsInFolderTree(folderId)
+      const out: Record<string, string> = {}
+      for (const fileId of fileIds) {
+        try {
+          const keyResp = await filesApi.getKey(fileId)
+          const fileKey = await decryptFileKeyWithRSA(
+            keyResp.data.file_key_encrypted,
+            sessionPrivateKey
+          )
+          const encrypted = await encryptFileKeyWithRSA(fileKey, recipientPublicKeyPem)
+          out[fileId] = encrypted
+        } catch {
+          // Salta file non accessibili (es. eliminato); gli altri permessi restano validi
+          continue
+        }
+      }
+      return out
+    },
+    [user, sessionPrivateKey]
+  )
+
   /**
    * Decifra i nomi di una lista di file (name_encrypted cifrato con fileKey).
    * Usa la chiave privata in sessione.
@@ -441,7 +530,8 @@ export function useCrypto(): UseCryptoReturn {
           console.log('[DECRYPT NAME] fileKey decifrata OK')
 
           const nameBytes = base64ToBytes(file.name_encrypted)
-          const decrypted = await decryptFileChunked(nameBytes, fileKey, user.id)
+          const aadForName = (keyResp.data as { owner_id?: string }).owner_id ?? user.id
+          const decrypted = await decryptFileChunked(nameBytes, fileKey, aadForName)
           const decoded = new TextDecoder().decode(decrypted)
           console.log('[DECRYPT NAME] nome decifrato:', decoded)
 
@@ -479,7 +569,8 @@ export function useCrypto(): UseCryptoReturn {
             privateKey
           )
           const nameBytes = base64ToBytes(folder.name_encrypted)
-          const decrypted = await decryptFileChunked(nameBytes, folderKey, user.id)
+          const aadForName = (keyResp.data as { owner_id?: string }).owner_id ?? user.id
+          const decrypted = await decryptFileChunked(nameBytes, folderKey, aadForName)
           results[folder.id] = new TextDecoder().decode(decrypted)
         } catch (err) {
           console.error('[DECRYPT FOLDER NAME]', folder.id, err)
@@ -567,6 +658,8 @@ export function useCrypto(): UseCryptoReturn {
     encryptFileNameForRename,
     shareFile,
     getFileKeyBase64ForShare,
+    getFolderKeyBase64ForShare,
+    getFileKeysEncryptedForFolderShare,
     clearError,
   }
 }

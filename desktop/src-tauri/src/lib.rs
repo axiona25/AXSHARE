@@ -167,6 +167,13 @@ pub fn run() {
             tray::setup_tray(app)?;
             file_watcher_local::start_local_file_watcher(db_for_watcher);
 
+            // Imposta AppHandle nel virtual disk per eventi
+            let disk_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = disk_handle.state::<AppState>();
+                state.virtual_disk.set_app_handle(disk_handle.clone()).await;
+            });
+
             #[cfg(target_os = "macos")]
             crate::tray::set_activation_policy(app.handle(), false);
 

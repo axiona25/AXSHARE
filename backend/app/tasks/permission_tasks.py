@@ -1,6 +1,6 @@
 """
 Task Celery per TTL permessi: invalida permessi scaduti e notifica in scadenza.
-Pubblica su Redis per future notifiche push.
+Pubblica su Redis per notifiche push (toast real-time).
 """
 
 from datetime import datetime, timezone, timedelta
@@ -15,9 +15,13 @@ logger = structlog.get_logger()
 async def _expire_permissions_async():
     from app.database import AsyncSessionLocal
     from app.models.permission import Permission
+    from app.services.notification_service import NotificationService
+    from app.core.notification_types import NotificationType, NotificationSeverity
+    from app.core.redis_pubsub import publish_notification
 
     now = datetime.now(timezone.utc)
     expired_count = 0
+    links_expired = 0
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -32,6 +36,33 @@ async def _expire_permissions_async():
         permissions = result.scalars().all()
 
         for perm in permissions:
+            if perm.subject_user_id:
+                try:
+                    notif = await NotificationService.create(
+                        db=db,
+                        user_id=perm.subject_user_id,
+                        type=NotificationType.PERMISSION_EXPIRED,
+                        title="Accesso scaduto",
+                        body="Il tuo accesso a un file/cartella condiviso è scaduto.",
+                        resource_type="file" if perm.resource_file_id else "folder",
+                        resource_id=str(perm.resource_file_id or perm.resource_folder_id or ""),
+                        severity=NotificationSeverity.WARNING,
+                    )
+                    await publish_notification(
+                        str(perm.subject_user_id),
+                        {
+                            "id": str(notif.id),
+                            "type": notif.type,
+                            "title": notif.title,
+                            "body": notif.body or "",
+                            "resource_type": notif.resource_type or "",
+                            "resource_id": notif.resource_id or "",
+                            "action_url": notif.action_url,
+                            "created_at": notif.created_at.isoformat() if notif.created_at else None,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning("notification_create_failed", error=str(e))
             perm.is_active = False
             perm.resource_key_encrypted = None
             expired_count += 1
@@ -42,7 +73,20 @@ async def _expire_permissions_async():
                 resource_file_id=str(perm.resource_file_id) if perm.resource_file_id else None,
             )
 
-        if expired_count > 0:
+        # Disattiva share link scaduti
+        from app.models.share_link import ShareLink
+        expired_links_result = await db.execute(
+            select(ShareLink).where(
+                ShareLink.expires_at.isnot(None),
+                ShareLink.expires_at <= now,
+                ShareLink.is_active.is_(True),
+            )
+        )
+        for link in expired_links_result.scalars().all():
+            link.is_active = False
+            links_expired += 1
+
+        if expired_count > 0 or links_expired > 0:
             await db.commit()
             try:
                 import redis.asyncio as aioredis
@@ -57,8 +101,12 @@ async def _expire_permissions_async():
             except Exception as e:
                 logger.warning("redis_publish_failed", error=str(e))
 
-    logger.info("expire_permissions_done", expired_count=expired_count)
-    return {"expired": expired_count}
+    logger.info(
+        "expire_permissions_done",
+        permissions_expired=expired_count,
+        share_links_expired=links_expired,
+    )
+    return {"expired": expired_count, "share_links_expired": links_expired}
 
 
 async def _notify_expiring_soon_async():

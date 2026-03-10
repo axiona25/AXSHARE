@@ -16,7 +16,7 @@ import { usersApi } from '@/lib/api'
 
 function toBase64(buf: ArrayBuffer | Uint8Array): string {
   const arr = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
-  return btoa(String.fromCharCode(...arr))
+  return btoa(String.fromCharCode(...Array.from(arr)))
 }
 
 function fromBase64(b64: string): Uint8Array {
@@ -201,7 +201,7 @@ export const keyManager = {
 
     const iv = window.crypto.getRandomValues(new Uint8Array(12))
     const encryptedPrivateKey = await window.crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
+      { name: 'AES-GCM', iv: iv as BufferSource },
       aesKey,
       privateKeyBuffer
     )
@@ -259,9 +259,9 @@ export const keyManager = {
     let privateKeyBuffer: ArrayBuffer
     try {
       privateKeyBuffer = await window.crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv },
+        { name: 'AES-GCM', iv: iv as BufferSource },
         aesKey,
-        encryptedPrivateKey
+        encryptedPrivateKey as BufferSource
       )
     } catch {
       throw new Error('PIN non corretto')

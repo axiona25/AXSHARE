@@ -1,5 +1,7 @@
 """Auth endpoints — TOTP setup/verify, JWT refresh, dev-only register/login."""
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -19,7 +21,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class DevRegisterBody(BaseModel):
     email: str
     password: str
-    display_name: str | None = None  # Nome e cognome (es. "Raffaele Amoroso")
+    display_name: Optional[str] = None  # Nome e cognome (es. "Raffaele Amoroso")
 
 
 class DevLoginBody(BaseModel):
@@ -38,6 +40,14 @@ class TOTPVerifyRequest(BaseModel):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+
+
+class VerifyPinRequest(BaseModel):
+    pin: str
+
+
+class SetPinRequest(BaseModel):
+    pin: str
 
 
 def _dev_only():
@@ -171,3 +181,38 @@ async def refresh_token(
         request=request,
     )
     return {"access_token": new_token, "token_type": "bearer"}
+
+
+@router.post("/verify-pin")
+async def verify_pin(
+    body: VerifyPinRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Verifica il PIN dell'utente (per file condivisi con require_pin).
+    Restituisce sempre 200: { "valid": true } o { "valid": false } (no 401 per gestire tentativi lato frontend).
+    """
+    from app.crypto.kdf import verify_password
+
+    if not current_user.pin_hash:
+        return {"valid": False}
+    return {"valid": verify_password(body.pin, current_user.pin_hash)}
+
+
+@router.post("/set-pin")
+async def set_pin(
+    body: SetPinRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Salva l'hash del PIN dell'utente (chiamato quando l'utente imposta il PIN in registrazione/setup chiavi).
+    Il PIN viene hashato con lo stesso meccanismo usato per le password (Argon2id).
+    """
+    from app.crypto.kdf import hash_password_for_storage
+
+    if not body.pin or len(body.pin) < 4:
+        raise HTTPException(status_code=400, detail="PIN non valido (minimo 4 caratteri)")
+    current_user.pin_hash = hash_password_for_storage(body.pin)
+    await db.commit()
+    return {"status": "ok"}

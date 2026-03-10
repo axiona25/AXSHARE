@@ -2,7 +2,13 @@
 
 import uuid
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
+
+try:
+    from exceptiongroup import ExceptionGroup
+except ImportError:
+    ExceptionGroup = getattr(__builtins__, "ExceptionGroup", type("ExceptionGroup", (Exception,), {}))
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,18 +40,23 @@ async def get_file_activity(
     db: AsyncSession = Depends(get_db),
 ):
     """Ultime 20 attività su quel file (solo per l'utente corrente)."""
-    result = await db.execute(
-        select(ActivityLog)
-        .where(
-            ActivityLog.target_type == "file",
-            ActivityLog.target_id == file_id,
-            ActivityLog.user_id == current_user.id,
+    try:
+        result = await db.execute(
+            select(ActivityLog)
+            .where(
+                ActivityLog.target_type == "file",
+                ActivityLog.target_id == file_id,
+                ActivityLog.user_id == current_user.id,
+            )
+            .order_by(ActivityLog.created_at.desc())
+            .limit(20)
         )
-        .order_by(ActivityLog.created_at.desc())
-        .limit(20)
-    )
-    rows = result.scalars().all()
-    return [_row_to_item(r) for r in rows]
+        rows = result.scalars().all()
+        return [_row_to_item(r) for r in rows]
+    except (Exception, ExceptionGroup) as e:
+        err = e.exceptions[0] if isinstance(e, ExceptionGroup) and getattr(e, "exceptions", None) else e
+        structlog.get_logger().warning("get_file_activity_error", file_id=str(file_id), error=str(err))
+        return []
 
 
 @router.get("/folder/{folder_id}")

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import Image from 'next/image'
 import { useAuthContext } from '@/context/AuthContext'
@@ -22,6 +22,7 @@ import {
   onToggleVirtualDisk,
   type SyncProgress,
 } from '@/lib/tauri'
+import { HardDrive, Lock } from 'lucide-react'
 import { getAxshareFileIcon, getFileIcon } from '@/lib/fileIcons'
 import { decryptFileKeyWithRSA, decryptFileChunked, base64ToBytes, bytesToBase64 } from '@/lib/crypto'
 import { useCrypto } from '@/hooks/useCrypto'
@@ -121,6 +122,7 @@ export default function DesktopPage() {
   const [loginError, setLoginError] = useState('')
   const [pinError, setPinError] = useState('')
   const [loading, setLoading] = useState(false)
+  const pinInputRef = useRef<HTMLInputElement>(null)
 
   const [sessionLocked, setSessionLocked] = useState<boolean>(false)
   const [diskMounted, setDiskMounted] = useState<boolean>(false)
@@ -137,6 +139,8 @@ export default function DesktopPage() {
   const [rootFolders, setRootFolders] = useState<Folder[]>([])
   const [decryptedFolderNames, setDecryptedFolderNames] = useState<Record<string, string>>({})
   const [decryptedActivityFileNames, setDecryptedActivityFileNames] = useState<Record<string, string>>({})
+  const [recentItems, setRecentItems] = useState<Array<{ id: string; name_encrypted: string; updated_at: string | null; created_at: string | null; is_folder: boolean; size?: number }>>([])
+  const [decryptedRecentNames, setDecryptedRecentNames] = useState<Record<string, string>>({})
   const [storageReport, setStorageReport] = useState<{
     total_size_bytes: number
     storage_quota_bytes: number
@@ -149,6 +153,13 @@ export default function DesktopPage() {
     setDesktopStep('login')
     setMounted(true)
   }, [])
+
+  // Focus sul campo PIN quando si passa allo step 'pin' dopo il login
+  useEffect(() => {
+    if (desktopStep !== 'pin') return
+    const t = setTimeout(() => pinInputRef.current?.focus(), 0)
+    return () => clearTimeout(t)
+  }, [desktopStep])
 
   const refreshAll = useCallback(async () => {
     if (!isRunningInTauri()) return
@@ -194,13 +205,25 @@ export default function DesktopPage() {
     if (desktopStep !== 'dashboard') return
     const load = async () => {
       try {
-        const [activityRes, foldersRes, reportRes] = await Promise.all([
+        const [activityRes, foldersRes, reportRes, rootFilesRes] = await Promise.all([
           activityApi.getRecent().catch(() => ({ data: [] as ActivityLog[] })),
           foldersApi.listRoot().catch(() => ({ data: [] as Folder[] })),
           reportsApi.getMyDashboard().catch(() => ({ data: null })),
+          foldersApi.listRootFiles().catch(() => ({ data: [] })),
         ])
         setRecentActivity(Array.isArray(activityRes.data) ? activityRes.data : [])
         setRootFolders(Array.isArray(foldersRes.data) ? foldersRes.data : [])
+        const rootFiles = (rootFilesRes.data ?? []).map((f) => ({ ...f, is_folder: false, created_at: (f as { created_at?: string | null }).created_at ?? null }))
+        const rootFoldersForRecent = (foldersRes.data ?? []).map((f) => ({ ...f, is_folder: true, size: undefined, created_at: f.created_at ?? null, updated_at: f.updated_at ?? null }))
+        const combined = [...rootFiles, ...rootFoldersForRecent]
+          .map((item) => ({ ...item, updated_at: item.updated_at ?? null, created_at: item.created_at ?? null }))
+          .sort((a, b) => {
+            const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0
+            const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0
+            return tb - ta
+          })
+          .slice(0, RECENT_FILES_LIMIT)
+        setRecentItems(combined)
         if (reportRes.data?.storage) {
           setStorageReport({
             total_size_bytes: reportRes.data.storage.total_size_bytes,
@@ -254,6 +277,22 @@ export default function DesktopPage() {
     }
     loadAndDecrypt().catch(() => {})
   }, [desktopStep, hasSessionKey, recentActivity, decryptFileNames])
+
+  useEffect(() => {
+    if (desktopStep !== 'dashboard' || !hasSessionKey || recentItems.length === 0) return
+    const toDecrypt = recentItems.filter((f) => !decryptedRecentNames[f.id])
+    if (toDecrypt.length === 0) return
+    const folders = toDecrypt.filter((f) => f.is_folder)
+    const files = toDecrypt.filter((f) => !f.is_folder)
+    Promise.all([
+      folders.length > 0 ? decryptFolderNames(folders.map((f) => ({ id: f.id, name_encrypted: f.name_encrypted }))) : Promise.resolve({} as Record<string, string>),
+      files.length > 0 ? decryptFileNames(files.map((f) => ({ id: f.id, name_encrypted: f.name_encrypted }))) : Promise.resolve({} as Record<string, string>),
+    ])
+      .then(([folderNames, fileNames]) => {
+        setDecryptedRecentNames((prev) => ({ ...prev, ...folderNames, ...fileNames }))
+      })
+      .catch(() => {})
+  }, [desktopStep, hasSessionKey, recentItems, decryptedRecentNames, decryptFolderNames, decryptFileNames])
 
   useEffect(() => {
     if (!isRunningInTauri() || desktopStep !== 'dashboard') return
@@ -364,6 +403,15 @@ export default function DesktopPage() {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       await invoke('encrypt_local_files_command')
+      // Smonta il disco virtuale se montato
+      if (diskMounted) {
+        try {
+          await invoke('unmount_virtual_disk')
+          setDiskMounted(false)
+        } catch (e) {
+          console.error('[LOGOUT] unmount_virtual_disk fallito:', e)
+        }
+      }
       console.log('[LOGOUT] encrypt_local_files_command completato')
     } catch (e) {
       console.error('[LOGOUT] encrypt_local_files_command fallito:', e)
@@ -419,29 +467,30 @@ export default function DesktopPage() {
 
           const filesResp = await foldersApi.listFiles(folder.id).catch(() => ({ data: [] as { id: string; name_encrypted: string; size_bytes?: number }[] }))
           console.log('[BUILD] files in folder', folder.id, ':', filesResp.data?.length)
-          for (const file of filesResp.data ?? []) {
-            try {
-              const fileKeyResp = await filesApi.getKey(file.id)
-              const fileKeyBytes = await decryptFileKeyWithRSA(
-                fileKeyResp.data.file_key_encrypted,
-                sessionPrivateKey
-              )
-              const fNameBytes = base64ToBytes(file.name_encrypted)
-              const fDec = await decryptFileChunked(fNameBytes, fileKeyBytes, user.id)
-              const fileName = safeName(new TextDecoder().decode(fDec))
-              if (shouldSkipDiskFile(fileName)) continue
-              entries.push({
-                file_id: file.id,
-                name: fileName,
-                size: file.size_bytes ?? 0,
-                is_folder: false,
-                folder_path: folderPathForFiles,
-                file_key_base64: bytesToBase64(fileKeyBytes),
-              })
-            } catch {
-              // skip file se decifratura fallisce
-            }
-          }
+          const fileEntries = await Promise.all(
+            (filesResp.data ?? []).map(async (file) => {
+              try {
+                const fileKeyResp = await filesApi.getKey(file.id)
+                const fileKeyBytes = await decryptFileKeyWithRSA(
+                  fileKeyResp.data.file_key_encrypted,
+                  sessionPrivateKey
+                )
+                const fNameBytes = base64ToBytes(file.name_encrypted)
+                const fDec = await decryptFileChunked(fNameBytes, fileKeyBytes, user.id)
+                const fileName = safeName(new TextDecoder().decode(fDec))
+                if (shouldSkipDiskFile(fileName)) return null
+                return {
+                  file_id: file.id,
+                  name: fileName,
+                  size: file.size_bytes ?? 0,
+                  is_folder: false,
+                  folder_path: folderPathForFiles,
+                  file_key_base64: bytesToBase64(fileKeyBytes),
+                } as DecryptedEntry
+              } catch { return null }
+            })
+          )
+          for (const e of fileEntries) { if (e) entries.push(e) }
 
           const childrenResp = await foldersApi.listChildren(folder.id).catch(() => ({ data: [] as Folder[] }))
           for (const child of childrenResp.data ?? []) {
@@ -460,29 +509,30 @@ export default function DesktopPage() {
 
       const rootFilesRes = await foldersApi.listRootFiles().catch(() => ({ data: [] as { id: string; name_encrypted: string; size?: number }[] }))
       console.log('[BUILD] rootFiles:', rootFilesRes.data?.length)
-      for (const file of rootFilesRes.data ?? []) {
-        try {
-          const fileKeyResp = await filesApi.getKey(file.id)
-          const fileKeyBytes = await decryptFileKeyWithRSA(
-            fileKeyResp.data.file_key_encrypted,
-            sessionPrivateKey
-          )
-          const fNameBytes = base64ToBytes(file.name_encrypted)
-          const fDec = await decryptFileChunked(fNameBytes, fileKeyBytes, user.id)
-          const fileName = safeName(new TextDecoder().decode(fDec))
-          if (shouldSkipDiskFile(fileName)) continue
-          entries.push({
-            file_id: file.id,
-            name: fileName,
-            size: file.size ?? 0,
-            is_folder: false,
-            folder_path: '/',
-            file_key_base64: bytesToBase64(fileKeyBytes),
-          })
-        } catch {
-          // skip file
-        }
-      }
+      const rootFileEntries = await Promise.all(
+        (rootFilesRes.data ?? []).map(async (file) => {
+          try {
+            const fileKeyResp = await filesApi.getKey(file.id)
+            const fileKeyBytes = await decryptFileKeyWithRSA(
+              fileKeyResp.data.file_key_encrypted,
+              sessionPrivateKey
+            )
+            const fNameBytes = base64ToBytes(file.name_encrypted)
+            const fDec = await decryptFileChunked(fNameBytes, fileKeyBytes, user.id)
+            const fileName = safeName(new TextDecoder().decode(fDec))
+            if (shouldSkipDiskFile(fileName)) return null
+            return {
+              file_id: file.id,
+              name: fileName,
+              size: file.size ?? 0,
+              is_folder: false,
+              folder_path: '/',
+              file_key_base64: bytesToBase64(fileKeyBytes),
+            } as DecryptedEntry
+          } catch { return null }
+        })
+      )
+      for (const e of rootFileEntries) { if (e) entries.push(e) }
 
       console.log('[BUILD] total entries:', entries.length, entries.map(e => e.is_folder ? 'DIR:'+e.name : 'FILE:'+e.name+' in '+e.folder_path))
       await invoke('update_disk_files_decrypted', { entries })
@@ -490,6 +540,21 @@ export default function DesktopPage() {
       console.error('buildAndSendFileList error:', e)
     }
   }, [user, sessionPrivateKey])
+
+  useEffect(() => {
+    if (!isRunningInTauri() || desktopStep !== 'dashboard') return
+    let unlisten: (() => void) | undefined
+    const setup = async () => {
+      const { listen } = await import('@tauri-apps/api/event')
+      unlisten = await listen('disk-file-uploaded', async () => {
+        console.log('[DISK] disk-file-uploaded ricevuto')
+        await buildAndSendFileList()
+        await refreshAll()
+      })
+    }
+    setup().catch(console.error)
+    return () => { unlisten?.() }
+  }, [desktopStep, buildAndSendFileList, refreshAll])
 
   /** Recupera tutti i file da mostrare sul disco (root + file nelle cartelle root). */
   const fetchFilesForDisk = useCallback(async (): Promise<{ id: string; name_encrypted: string; size: number }[]> => {
@@ -741,6 +806,7 @@ export default function DesktopPage() {
               ))}
             </div>
             <input
+              ref={pinInputRef}
               type="password"
               inputMode="numeric"
               maxLength={8}
@@ -821,15 +887,21 @@ export default function DesktopPage() {
         <section className="ax-desktop-section ax-desktop-sync-block">
           <div className="ax-desktop-sync-line">
             <div className="ax-desktop-sync-row">
-              <span className="ax-desktop-dot ax-desktop-dot-on" />
+              <span
+                className={`ax-desktop-dot ${syncProgress?.status === 'syncing' || syncProgress?.last_sync ? 'ax-desktop-dot-on' : 'ax-desktop-dot-sync-idle'}`}
+                aria-label={syncProgress?.status === 'syncing' || syncProgress?.last_sync ? 'Sincronizzato' : 'Sincronizzazione non avviata'}
+              />
               <span>
                 {syncProgress?.status === 'syncing'
                   ? 'Sincronizzazione in tempo reale'
-                  : 'Tutto sincronizzato'}
+                  : syncProgress?.last_sync
+                    ? 'Tutto sincronizzato'
+                    : 'Avvia sincronizzazione manuale'}
               </span>
               <span className="ax-desktop-muted">· {syncTime}</span>
             </div>
             <div className="ax-desktop-btn-row">
+              {/* Icona: ⏸ solo mentre status === 'syncing'; al click su pausa o quando la sync termina torna ▶ e resta play */}
               <button
                 type="button"
                 className={`ax-desktop-btn ax-desktop-btn-icon ax-desktop-btn-sync-toggle ${syncProgress?.status === 'syncing' ? 'ax-desktop-btn-sync-pause' : 'ax-desktop-btn-sync-play'}`}
@@ -840,71 +912,34 @@ export default function DesktopPage() {
               >
                 {syncProgress?.status === 'syncing' ? '⏸' : '▶'}
               </button>
-              <button
-                type="button"
-                className="ax-desktop-btn ax-desktop-btn-icon"
-                onClick={handlePauseSync}
-                disabled={syncProgress?.status !== 'syncing'}
-                aria-label="Pausa"
-                title="Pausa"
-              >
-                ⏸
-              </button>
             </div>
           </div>
         </section>
 
-        {/* Cartelle — scroll solo qui */}
+        {/* File e cartelle recenti */}
         <section className="ax-desktop-section ax-desktop-section-has-list">
-          <h2 className="ax-desktop-section-title">CARTELLE</h2>
-          <div className="ax-desktop-folders-list">
-            {rootFolders.length === 0 ? (
-              <p className="ax-desktop-muted" style={{ fontSize: 12, margin: 0 }}>
-                Nessuna cartella in root
-              </p>
-            ) : (
-              rootFolders.map((folder) => (
-                <div key={folder.id} className="ax-desktop-folder-row">
-                  <span className="ax-desktop-folder-icon" aria-hidden>📁</span>
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {decryptedFolderNames[folder.id] ?? folder.name_encrypted ?? 'Cartella'}
-                  </span>
-                  <span className="ax-desktop-folder-meta" title="Ultima modifica">
-                    {formatFolderDateTime(folder.updated_at, folder.created_at)}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        {/* Ultimi file — scroll solo qui */}
-        <section className="ax-desktop-section ax-desktop-section-has-list">
-          <h2 className="ax-desktop-section-title">ULTIMI FILE</h2>
+          <h2 className="ax-desktop-section-title">RECENTI</h2>
           <div className="ax-desktop-activity-list">
-            {fileActivity.length === 0 ? (
+            {recentItems.length === 0 ? (
               <p className="ax-desktop-muted" style={{ fontSize: 12, margin: 0, padding: 8 }}>
-                Nessuna attività recente
+                Nessun elemento recente
               </p>
             ) : (
-              fileActivity.map((log) => {
-                const label = ACTION_LABELS[log.action] ?? log.action
-                const displayName = decryptedActivityFileNames[log.target_id] ?? log.target_name ?? 'File'
-                const iconSrc = displayName.endsWith('.axshare')
-                  ? getAxshareFileIcon(displayName)
-                  : getFileIcon(displayName)
+              recentItems.map((item) => {
+                const displayName = decryptedRecentNames[item.id] ?? '...'
+                const iconSrc = item.is_folder ? '/icons/folder_blue.svg' : getFileIcon(displayName)
                 return (
-                  <div key={log.id} className="ax-desktop-activity-row">
+                  <div key={item.id} className="ax-desktop-activity-row">
                     <img
                       src={iconSrc}
                       alt=""
                       className="ax-desktop-activity-file-icon"
                     />
                     <span className="ax-desktop-activity-label" title={displayName}>
-                      {label} {displayName}
+                      {displayName}
                     </span>
-                    <span className="ax-desktop-activity-meta" title="Data e ora">
-                      {formatFolderDateTime(undefined, log.created_at)}
+                    <span className="ax-desktop-activity-meta">
+                      {formatFolderDateTime(item.created_at, item.created_at ?? '')}
                     </span>
                   </div>
                 )
@@ -940,7 +975,20 @@ export default function DesktopPage() {
           <section className="ax-desktop-section">
             <h2 className="ax-desktop-section-title">DISCO VIRTUALE</h2>
             <div className="ax-desktop-card ax-desktop-disk-row">
-              <div className="ax-desktop-disk-path">💿 {getDefaultMountPoint()}</div>
+              <div className="ax-desktop-disk-left">
+                <div className="ax-desktop-disk-line">
+                  <HardDrive size={18} strokeWidth={2} className="ax-desktop-disk-line-icon" aria-hidden />
+                  <span>Monta disco</span>
+                </div>
+                <div className="ax-desktop-disk-path">{getDefaultMountPoint()}</div>
+                <div className="ax-desktop-disk-status">
+                  <span
+                    className={`ax-desktop-dot ${diskMounted ? 'ax-desktop-dot-on' : 'ax-desktop-dot-grey'}`}
+                    aria-label={diskMounted ? 'Montato' : 'Smontato'}
+                  />
+                  <span>{diskMounted ? 'Montato' : 'Smontato'}</span>
+                </div>
+              </div>
               <div className="ax-desktop-disk-actions">
                 <button
                   type="button"
@@ -955,6 +1003,9 @@ export default function DesktopPage() {
                     alt=""
                     className="ax-desktop-disk-icon-img"
                   />
+                  {mountLoading && (
+                    <span className="ax-desktop-disk-spinner" aria-label="Caricamento..." />
+                  )}
                 </button>
                 {mountError && (
                   <p className="ax-desktop-mount-error" role="alert">
@@ -967,26 +1018,22 @@ export default function DesktopPage() {
           <section className="ax-desktop-section">
             <h2 className="ax-desktop-section-title">SESSIONE</h2>
             <div className="ax-desktop-card">
-              <div className="ax-desktop-session-line">
-                {sessionLocked ? '🔒 Bloccata' : '🔒 Attiva'}
-              </div>
-              <div className="ax-desktop-session-email" style={{ marginBottom: 0 }}>
-                {(user?.email ?? email) || '—'}
-              </div>
-              <div className="ax-desktop-session-keys">
-                <div className="ax-desktop-session-key-row">
-                  <span className="ax-desktop-session-key-label">Chiave pubblica</span>
-                  <span
-                    className={`ax-desktop-dot ${backendOk === false ? 'ax-desktop-dot-off' : user?.has_public_key ? 'ax-desktop-dot-on' : 'ax-desktop-dot-off'}`}
-                    aria-label={user?.has_public_key && backendOk !== false ? 'Attiva' : 'Non attiva'}
-                  />
+              <div className="ax-desktop-session-left">
+                <div className="ax-desktop-session-line">
+                  <Lock size={18} strokeWidth={2} className="ax-desktop-session-line-icon" aria-hidden />
+                  <span>{hasSessionKey ? 'Attiva' : 'Bloccata'}</span>
                 </div>
-                <div className="ax-desktop-session-key-row">
-                  <span className="ax-desktop-session-key-label">Chiave privata</span>
-                  <span
-                    className={`ax-desktop-dot ${backendOk === false ? 'ax-desktop-dot-off' : hasSessionKey ? 'ax-desktop-dot-on' : 'ax-desktop-dot-off'}`}
-                    aria-label={hasSessionKey && backendOk !== false ? 'Attiva' : 'Non attiva'}
-                  />
+                <div className="ax-desktop-session-email">
+                  {(user?.email ?? email) || '—'}
+                </div>
+                <div className="ax-desktop-session-keys">
+                  <div className="ax-desktop-session-key-row">
+                    <span className="ax-desktop-session-key-label">Chiave privata</span>
+                    <span
+                      className={`ax-desktop-dot ${backendOk === false ? 'ax-desktop-dot-off' : hasSessionKey ? 'ax-desktop-dot-on' : 'ax-desktop-dot-off'}`}
+                      aria-label={hasSessionKey && backendOk !== false ? 'Attiva' : 'Non attiva'}
+                    />
+                  </div>
                 </div>
               </div>
             </div>

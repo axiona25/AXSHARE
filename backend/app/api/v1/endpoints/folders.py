@@ -3,18 +3,21 @@ Albero di cartelle con nomi sempre cifrati lato client.
 """
 
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.file import File, Folder
-from app.services.activity_service import log_activity
+from app.models.permission import Permission
 from app.models.user import User
+from app.services.activity_service import log_activity
+from app.services.permission_service import PermissionService as PermSvc
 
 router = APIRouter(prefix="/folders", tags=["folders"])
 
@@ -44,25 +47,61 @@ async def create_folder(
     return {"folder_id": str(folder.id)}
 
 
+@router.get("/shared-with-me")
+async def list_shared_folders(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cartelle condivise con l'utente corrente (per pagina Condivisi)."""
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        select(Folder, User.id, User.email, User.display_name_encrypted, Permission.expires_at)
+        .select_from(Permission)
+        .join(Folder, Folder.id == Permission.resource_folder_id)
+        .join(User, User.id == Folder.owner_id)
+        .where(
+            Permission.subject_user_id == current_user.id,
+            Permission.is_active.is_(True),
+            (Permission.expires_at.is_(None)) | (Permission.expires_at > now),
+            Folder.is_destroyed.is_(False),
+        )
+    )
+    rows = result.all()
+    return [
+        {
+            "id": str(r[0].id),
+            "name_encrypted": r[0].name_encrypted,
+            "owner_id": str(r[1]),
+            "owner_email": r[2] or "",
+            "owner_display_name": r[3] or "",
+            "updated_at": r[0].updated_at.isoformat() if r[0].updated_at else None,
+            "type": "folder",
+            "permission_expires_at": r[4].isoformat() if r[4] else None,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{folder_id}/key")
 async def get_folder_key(
     folder_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Ritorna la folder_key_encrypted per il proprietario della cartella."""
-    # Prima cerca senza filtro owner per vedere se esiste
-    result_any = await db.execute(
-        select(Folder).where(Folder.id == folder_id)
-    )
-    folder_any = result_any.scalar_one_or_none()
-    if not folder_any:
+    """Ritorna la folder_key_encrypted per l'utente (owner: folder.folder_key_encrypted; condiviso: permission.resource_key_encrypted). Incluso owner_id per AAD in decrypt nome cartella."""
+    result = await db.execute(select(Folder).where(Folder.id == folder_id))
+    folder = result.scalar_one_or_none()
+    if not folder:
         raise HTTPException(status_code=404, detail="Cartella non trovata nel DB")
-    if folder_any.owner_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Accesso negato - non sei il proprietario")
-    return {
-        "folder_key_encrypted": folder_any.folder_key_encrypted or "",
-    }
+    owner_id_str = str(folder.owner_id)
+    if folder.owner_id == current_user.id:
+        return {"folder_key_encrypted": folder.folder_key_encrypted or "", "owner_id": owner_id_str}
+    perm = await PermSvc._get_permission(
+        db, current_user.id, resource_folder_id=folder_id
+    )
+    if perm and getattr(perm, "resource_key_encrypted", None):
+        return {"folder_key_encrypted": perm.resource_key_encrypted or "", "owner_id": owner_id_str}
+    raise HTTPException(status_code=403, detail="Accesso negato alla cartella")
 
 
 @router.delete("/{folder_id}")
@@ -219,6 +258,7 @@ async def list_root_files(
             File.owner_id == current_user.id,
             File.folder_id.is_(None),
             File.is_destroyed.is_(False),
+            File.is_trashed.is_(False),
             File.size_bytes > 100,
         )
     )
@@ -232,6 +272,9 @@ async def list_root_files(
             "created_at": f.created_at.isoformat() if f.created_at else None,
             "updated_at": f.updated_at.isoformat() if f.updated_at else None,
             "is_signed": f.is_signed,
+            "owner_id": str(current_user.id),
+            "owner_email": current_user.email,
+            "owner_display_name": None,
         }
         for f in files
     ]
@@ -243,10 +286,15 @@ async def list_children(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Verifica che la cartella esista e appartenga all'utente
     parent = await db.get(Folder, folder_id)
-    if parent is None or parent.owner_id != current_user.id or parent.is_destroyed:
+    if parent is None or parent.is_destroyed:
         raise HTTPException(status_code=404, detail="Cartella non trovata")
+    if parent.owner_id != current_user.id:
+        perm = await PermSvc._get_permission(
+            db, current_user.id, resource_folder_id=folder_id
+        )
+        if perm is None:
+            raise HTTPException(status_code=404, detail="Cartella non trovata")
     size_subq = (
         select(func.coalesce(func.sum(File.size_bytes), 0))
         .where(File.folder_id == Folder.id, File.is_destroyed.is_(False))
@@ -315,16 +363,42 @@ async def list_folder_files(
     db: AsyncSession = Depends(get_db),
 ):
     folder = await db.get(Folder, folder_id)
-    if folder is None or folder.owner_id != current_user.id or folder.is_destroyed:
+    if folder is None or folder.is_destroyed:
         raise HTTPException(status_code=404, detail="Cartella non trovata")
+    if folder.owner_id != current_user.id:
+        perm = await PermSvc._get_permission(
+            db, current_user.id, resource_folder_id=folder_id
+        )
+        if perm is None:
+            raise HTTPException(status_code=404, detail="Cartella non trovata")
     result = await db.execute(
         select(File).where(
             File.folder_id == folder_id,
             File.is_destroyed.is_(False),
+            File.is_trashed.is_(False),
             File.size_bytes > 100,
         )
     )
     files = result.scalars().all()
+    if folder.owner_id == current_user.id:
+        return [
+            {
+                "id": str(f.id),
+                "name_encrypted": f.name_encrypted,
+                "size": f.size_bytes,
+                "current_version": f.version,
+                "created_at": f.created_at.isoformat() if f.created_at else None,
+                "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+                "is_signed": f.is_signed,
+                "owner_id": str(current_user.id),
+                "owner_email": current_user.email,
+                "owner_display_name": None,
+            }
+            for f in files
+        ]
+    owner_ids = list({f.owner_id for f in files})
+    owners_result = await db.execute(select(User).where(User.id.in_(owner_ids)))
+    owners = {u.id: u for u in owners_result.scalars().all()}
     return [
         {
             "id": str(f.id),
@@ -334,6 +408,9 @@ async def list_folder_files(
             "created_at": f.created_at.isoformat() if f.created_at else None,
             "updated_at": f.updated_at.isoformat() if f.updated_at else None,
             "is_signed": f.is_signed,
+            "owner_id": str(f.owner_id),
+            "owner_email": (owners[f.owner_id].email if f.owner_id in owners else ""),
+            "owner_display_name": (owners[f.owner_id].display_name_encrypted if f.owner_id in owners else "") or "",
         }
         for f in files
     ]

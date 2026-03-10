@@ -208,12 +208,26 @@ export const authApi = {
     apiClient.post<AuthTokens>('/auth/token/refresh', {
       refresh_token: refreshToken,
     }),
+
+  verifyPin: (pin: string) =>
+    apiClient.post<{ valid: boolean }>('/auth/verify-pin', { pin }),
+
+  setPin: (pin: string) =>
+    apiClient.post<{ status: string }>('/auth/set-pin', { pin }),
 }
 
 // ─── Users API ───────────────────────────────────────────────────────────────
 
 export const usersApi = {
   getMe: () => apiClient.get<User>('/users/me'),
+  search: (q: string) =>
+    apiClient.get<{ id: string; email: string; public_key_rsa: string | null }[]>(
+      `/users/search?q=${encodeURIComponent(q)}`
+    ),
+  getPublicKey: (userId: string) =>
+    apiClient.get<{ user_id: string; public_key_pem: string }>(
+      `/users/${userId}/public-key`
+    ),
   deleteKeys: () => apiClient.delete<{ message: string }>('/users/me/keys'),
 
   updateMe: (data: { display_name?: string }) =>
@@ -232,11 +246,6 @@ export const usersApi = {
       encrypted_private_key: string | null
       public_key_pem: string | null
     }>('/users/me/private-key'),
-
-  getPublicKey: (userId: string) =>
-    apiClient.get<{ public_key_pem: string }>(
-      `/users/${userId}/public-key`
-    ),
 
   registerSigningKey: (signingPublicKeyPem: string) =>
     apiClient.post<{ message: string; registered_at: string }>(
@@ -267,6 +276,9 @@ export interface ShareLinkData {
   is_password_protected: boolean
   require_recipient_pin?: boolean
   expires_at: string | null
+  block_delete?: boolean
+  require_pin?: boolean
+  is_expired?: boolean
   max_downloads: number | null
   download_count: number
   is_active: boolean
@@ -279,10 +291,14 @@ export interface PublicShareInfo {
   token: string
   is_password_protected: boolean
   require_recipient_pin?: boolean
+  requires_pin?: boolean
   expires_at: string | null
+  is_expired?: boolean
   max_downloads: number | null
   download_count: number
   label: string | null
+  block_delete?: boolean
+  require_pin?: boolean
 }
 
 export const shareLinksApi = {
@@ -292,7 +308,10 @@ export const shareLinksApi = {
       file_key_encrypted_for_link?: string
       password?: string
       require_recipient_pin?: boolean
-      expires_at?: string
+      expires_at?: string | null
+      block_delete?: boolean
+      require_pin?: boolean
+      pin?: string
       max_downloads?: number
       label?: string
     }
@@ -306,7 +325,11 @@ export const shareLinksApi = {
   getPublicInfo: (token: string) =>
     apiClient.get<PublicShareInfo>(`/public/share/${token}`),
 
-  downloadViaLink: (token: string, password?: string) =>
+  /** Verifica PIN del link (endpoint pubblico, no JWT). */
+  verifyPin: (token: string, pin: string) =>
+    apiClient.post<{ valid: boolean }>(`/public/share/${token}/verify-pin`, { pin }),
+
+  downloadViaLink: (token: string, password?: string, pin?: string) =>
     apiClient.post<{
       file_id: string
       name_encrypted: string
@@ -314,13 +337,18 @@ export const shareLinksApi = {
       encryption_iv: string
       size_bytes: number
       download_count: number
-    }>(`/public/share/${token}/download`, { password }),
+    }>(`/public/share/${token}/download`, { password, pin }),
 
-  /** Stream file cifrato (bytes). Header X-Link-Password se il link è protetto. */
-  getStream: (token: string, password?: string) =>
+  /** Stream file cifrato (bytes). Header X-Link-Password / X-Link-Pin se richiesti. */
+  getStream: (token: string, password?: string, pin?: string) =>
     apiClient.get<ArrayBuffer>(`/public/share/${token}/stream`, {
       responseType: 'arraybuffer',
-      headers: password != null ? { 'X-Link-Password': password } : undefined,
+      headers: (() => {
+        const h: Record<string, string> = {}
+        if (password != null) h['X-Link-Password'] = password
+        if (pin != null) h['X-Link-Pin'] = pin
+        return Object.keys(h).length ? h : undefined
+      })(),
     }),
 }
 
@@ -426,6 +454,7 @@ export const filesApi = {
       file_key_encrypted: string
       encryption_iv: string
       mime_type_encrypted?: string
+      requires_pin?: boolean
     }>(`/files/${fileId}/key`),
 
   uploadVersion: (
@@ -499,6 +528,12 @@ export const filesApi = {
       { folder_id: targetFolderId }
     ),
 
+  copy: (fileId: string, body: { folder_id: string | null }) =>
+    apiClient.post<{ copied: boolean; new_file_id: string; folder_id: string | null }>(
+      `/files/${fileId}/copy`,
+      body
+    ),
+
   /** Rinomina un file (name_encrypted già cifrato lato client). */
   rename: (fileId: string, nameEncrypted: string) =>
     apiClient.patch<{ renamed: boolean; file_id: string }>(
@@ -524,7 +559,7 @@ export const foldersApi = {
   },
 
   getKey: (folderId: string) =>
-    apiClient.get<{ folder_key_encrypted: string }>(`/folders/${folderId}/key`),
+    apiClient.get<{ folder_key_encrypted: string; owner_id?: string }>(`/folders/${folderId}/key`),
 
   destroy: (folderId: string) =>
     apiClient.delete(`/folders/${folderId}`),
@@ -546,6 +581,21 @@ export const foldersApi = {
 
   listRoot: () => apiClient.get<Folder[]>('/folders/'),
 
+  /** Cartelle condivise con l'utente corrente (per pagina Condivisi). */
+  listSharedWithMe: () =>
+    apiClient.get<
+      Array<{
+        id: string
+        name_encrypted: string
+        owner_id: string
+        owner_email: string
+        owner_display_name: string
+        updated_at: string | null
+        type: 'folder'
+        permission_expires_at?: string | null
+      }>
+    >('/folders/shared-with-me'),
+
   listChildren: (folderId: string) =>
     apiClient.get<Folder[]>(`/folders/${folderId}/children`),
 
@@ -557,6 +607,22 @@ export const foldersApi = {
 
   listFiles: (folderId: string) =>
     apiClient.get<FileItem[]>(`/folders/${folderId}/files`),
+
+  /** Restituisce tutti gli id file nel sottoalbero della cartella (per share con file_keys_encrypted). */
+  async getFileIdsInFolderTree(folderId: string): Promise<string[]> {
+    const [filesRes, childrenRes] = await Promise.all([
+      foldersApi.listFiles(folderId),
+      foldersApi.listChildren(folderId),
+    ])
+    const files = filesRes.data ?? []
+    const children = childrenRes.data ?? []
+    let ids = files.map((f) => f.id)
+    for (const child of children) {
+      const subIds = await foldersApi.getFileIdsInFolderTree(child.id)
+      ids = ids.concat(subIds)
+    }
+    return ids
+  },
 
   listRootFiles: () =>
     apiClient.get<RootFileItem[]>(`/folders/root/files`),
@@ -594,16 +660,52 @@ export const permissionsApi = {
     level: PermissionLevel
     resource_key_encrypted?: string
     expires_at?: string
+    block_delete?: boolean
+    block_link?: boolean
+    require_pin?: boolean
+    /** Solo per grant su cartella: file_id -> chiave file cifrata per il destinatario */
+    file_keys_encrypted?: Record<string, string>
   }) => apiClient.post<Permission>('/permissions/', data),
 
   revoke: (permissionId: string) =>
-    apiClient.delete(`/permissions/${permissionId}`),
+    apiClient.delete<{ revoked: boolean }>(`/permissions/${permissionId}`),
+
+  update: (
+    permissionId: string,
+    data: {
+      level?: string
+      block_delete?: boolean
+      block_link?: boolean
+      require_pin?: boolean
+      expires_at?: string | null
+    }
+  ) =>
+    apiClient.patch<Permission>(`/permissions/${permissionId}`, data),
 
   listForFile: (fileId: string) =>
     apiClient.get<Permission[]>(`/permissions/file/${fileId}`),
 
   listForFolder: (folderId: string) =>
     apiClient.get<Permission[]>(`/permissions/folder/${folderId}`),
+
+  /** Lista permessi per file o cartella (wrapper per modale/pagina gestione). */
+  listForResource: (params: { resourceFileId?: string; resourceFolderId?: string }) =>
+    params.resourceFileId
+      ? apiClient.get<Permission[]>(`/permissions/file/${params.resourceFileId}`)
+      : params.resourceFolderId
+        ? apiClient.get<Permission[]>(`/permissions/folder/${params.resourceFolderId}`)
+        : Promise.resolve({ data: [] as Permission[] }),
+
+  /** File e cartelle che l'utente ha condiviso (con almeno un permesso attivo). */
+  listMySharedResources: () =>
+    apiClient.get<{
+      items: Array<{
+        type: 'file' | 'folder'
+        id: string
+        name_encrypted: string
+        permission_count: number
+      }>
+    }>('/permissions/my-shared-resources'),
 
   listExpiringSoon: (hours = 24) =>
     apiClient.get<Permission[]>(

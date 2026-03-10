@@ -44,6 +44,13 @@ class ShareLink(Base, UUIDMixin, TimestampMixin):
     require_recipient_pin: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
+    block_delete: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
+    require_pin: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
+    pin_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -6,6 +6,7 @@ import Image from 'next/image'
 import { useAuthContext } from '@/context/AuthContext'
 import { useFiles, useFileMutations } from '@/hooks/useFiles'
 import { useCrypto } from '@/hooks/useCrypto'
+import { usePinVerification } from '@/hooks/usePinVerification'
 import { activityApi, filesApi, trashApi, shareLinksApi } from '@/lib/api'
 import { getFileIcon, getFileLabel, getAxsFileIcon } from '@/lib/fileIcons'
 import { AppHeader } from '@/components/AppHeader'
@@ -86,6 +87,15 @@ const ACTION_LABELS: Record<string, string> = {
   destroy: 'Eliminato definitivamente',
 }
 
+/** Azioni da mostrare in ATTIVITÀ: esclude download/sync virtual disk. */
+const ACTIVITY_ACTIONS_TO_SHOW = new Set([
+  'upload', 'rename', 'move', 'delete', 'share', 'share_link', 'share_revoke', 'trash', 'destroy', 'create_folder', 'update',
+])
+
+function getActivityLabel(log: ActivityLog): string {
+  return ACTION_LABELS[log.action] ?? log.action
+}
+
 function formatActivityDate(createdAt: string): string {
   const d = new Date(createdAt)
   if (Number.isNaN(d.getTime())) return ''
@@ -109,7 +119,7 @@ function formatActivityDisplay(log: ActivityLog): string {
 export default function MediaPage() {
   const { files, isLoading: filesLoading, revalidate: reloadFiles } = useFiles(undefined)
   const { deleteFile } = useFileMutations()
-  const { hasSessionKey } = useAuthContext()
+  const { hasSessionKey, user } = useAuthContext()
   const { downloadAndDecrypt, decryptFileNames, getFileKeyBase64ForShare } = useCrypto()
 
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({})
@@ -129,7 +139,7 @@ export default function MediaPage() {
       if (next.has(id)) next.delete(id)
       else next.add(id)
       try {
-        window.localStorage.setItem('axshare_favorites', JSON.stringify([...next]))
+        window.localStorage.setItem('axshare_favorites', JSON.stringify(Array.from(next)))
       } catch { /* ignore */ }
       return next
     })
@@ -158,7 +168,7 @@ export default function MediaPage() {
   } | null>(null)
   const [lastActivityByTargetId, setLastActivityByTargetId] = useState<Record<string, ActivityLog | null>>({})
   const [linkModal, setLinkModal] = useState<{ id: string; name: string } | null>(null)
-  const [shareModal, setShareModal] = useState<{ id: string; name: string } | null>(null)
+  const [shareModal, setShareModal] = useState<{ type: 'file'; id: string; name: string } | null>(null)
   const [sharePermission, setSharePermission] = useState<'read' | 'write'>('read')
   const [shareBlockForward, setShareBlockForward] = useState(false)
   const [shareBlockDelete, setShareBlockDelete] = useState(false)
@@ -177,6 +187,7 @@ export default function MediaPage() {
   const [previewType, setPreviewType] = useState<'image' | 'video' | 'audio'>('image')
   const [previewName, setPreviewName] = useState('')
   const [previewFileId, setPreviewFileId] = useState<string | null>(null)
+  const { requestPin, PinModal } = usePinVerification()
 
   function closePreview() {
     setShowPreview(false)
@@ -188,17 +199,37 @@ export default function MediaPage() {
   async function handleOpenMedia(file: FileItem | RootFileItem) {
     if (!hasSessionKey) return
     try {
-      const blob = await downloadAndDecrypt(file.id)
+      const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
       if (!blob) return
       const displayName = decryptedNames[file.id] ?? file.name_encrypted
       const mime = (blob.type || '').toLowerCase()
+      // Estensione da displayName decifrato (affidabile) — non dal nome cifrato
       const ext = (displayName.split('.').pop() ?? '').toLowerCase()
       const isImage = mime.startsWith('image/') || MEDIA_IMAGE_EXT.has(ext)
       const isVideo = mime.startsWith('video/') || MEDIA_VIDEO_EXT.has(ext)
       const isAudio = mime.startsWith('audio/') || MEDIA_AUDIO_EXT.has(ext)
+
+      // Se il blob ha MIME generico ma l'estensione è media, forza il MIME corretto
+      // così il tag <img>/<video>/<audio> lo renderizza correttamente
+      let finalBlob = blob
+      if (blob.type === 'application/octet-stream' && (isImage || isVideo || isAudio)) {
+        const FORCE_MIME: Record<string, string> = {
+          jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+          gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+          svg: 'image/svg+xml',
+          mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+          avi: 'video/x-msvideo', mkv: 'video/x-matroska', m4v: 'video/mp4',
+          mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4',
+          ogg: 'audio/ogg', flac: 'audio/flac', aac: 'audio/aac',
+        }
+        if (FORCE_MIME[ext]) {
+          finalBlob = new Blob([await blob.arrayBuffer()], { type: FORCE_MIME[ext] })
+        }
+      }
+
       if (isImage || isVideo || isAudio) {
         if (previewUrl) URL.revokeObjectURL(previewUrl)
-        const url = URL.createObjectURL(blob)
+        const url = URL.createObjectURL(finalBlob)
         setPreviewUrl(url)
         setPreviewType(isImage ? 'image' : isVideo ? 'video' : 'audio')
         setPreviewName(displayName)
@@ -245,7 +276,7 @@ export default function MediaPage() {
     try {
       const res = await activityApi.getFileActivity(fileId)
       const list = res.data ?? []
-      const first = list[0] ?? null
+      const first = (list as ActivityLog[]).find((log) => ACTIVITY_ACTIONS_TO_SHOW.has(log.action)) ?? null
       setLastActivityByTargetId((prev) => ({ ...prev, [fileId]: first }))
     } catch {
       // ignore
@@ -348,7 +379,8 @@ export default function MediaPage() {
           try {
             const res = await activityApi.getFileActivity(id)
             const list = res.data ?? []
-            if (!cancelled) next[id] = list[0] ?? null
+            const first = (list as ActivityLog[]).find((log) => ACTIVITY_ACTIONS_TO_SHOW.has(log.action)) ?? null
+            if (!cancelled) next[id] = first
           } catch {
             if (!cancelled) next[id] = null
           }
@@ -397,7 +429,7 @@ export default function MediaPage() {
     if (!hasSessionKey) return
     try {
       if (isRunningInTauri()) {
-        const blob = await downloadAndDecrypt(file.id)
+        const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
         if (!blob) return
         const { invoke } = await import('@tauri-apps/api/core')
         const fileName = decryptedNames[file.id] ?? file.name_encrypted ?? file.id
@@ -470,6 +502,7 @@ export default function MediaPage() {
 
   return (
     <div className="ax-dash-mockup-root">
+      <PinModal />
       <AppHeader searchValue={searchQuery} onSearchChange={setSearchQuery} hasShareNotification={hasShareNotif} onClearShareNotification={() => setHasShareNotif(false)} />
 
       <div className="app-body">
@@ -594,10 +627,13 @@ export default function MediaPage() {
                           )}
                         </div>
                       </th>
-                      <th style={{ width: '45%' }}>NOME</th>
-                      <th style={{ width: '15%' }}>DIMENSIONE</th>
-                      <th style={{ width: '20%' }}>TIPO</th>
-                      <th style={{ width: '20%' }}>MODIFICATO</th>
+                      <th style={{ width: '35%' }}>NOME</th>
+                      <th style={{ width: '8%' }}>DIMENSIONE</th>
+                      <th style={{ width: '16%' }}>PROPRIETARIO</th>
+                      <th style={{ width: '8%' }}>STATO</th>
+                      <th style={{ width: '10%' }}>CONDIVISIONI</th>
+                      <th style={{ width: '12%', textAlign: 'left' }}>DATA CREAZIONE</th>
+                      <th style={{ width: '11%', textAlign: 'left' }}>ATTIVITÀ</th>
                     </tr>
                   </thead>
                   <tbody className="file-table-tbody-fixed">
@@ -654,17 +690,41 @@ export default function MediaPage() {
                             </div>
                           </td>
                           <td className="file-size-cell">
-                            {formatFileSize((file as FileItem).size_bytes ?? (file as RootFileItem).size ?? 0)}
+                            {formatFileSize(((file as { size_bytes?: number; size?: number }).size_bytes ?? (file as { size_bytes?: number; size?: number }).size) ?? 0)}
                           </td>
-                          <td>{getMediaType(displayName)}</td>
-                          <td className="modified-cell">
-                            {fileModifiedOrCreatedAt ? formatRelativeModified(fileModifiedOrCreatedAt) + (formatDateTimeIt(fileModifiedOrCreatedAt) ? ` · ${formatDateTimeIt(fileModifiedOrCreatedAt)}` : '') : '—'}
+                          <td>
+                            <div className="owner-cell">
+                              <div className="owner-avatar">
+                                {user?.display_name?.trim()
+                                  ? (user.display_name.split(/\s+/).filter(Boolean)[0]?.[0] ?? user.display_name[0] ?? 'U').toUpperCase()
+                                  : (user?.email ? user.email.split('@')[0].slice(0, 2) : 'U').toUpperCase()}
+                              </div>
+                              {user?.display_name?.trim() || 'Tu'}
+                            </div>
+                          </td>
+                          <td>Privato</td>
+                          <td>—</td>
+                          <td className="modified-cell" title={fileWithDates.created_at ? formatDateTimeIt(fileWithDates.created_at) : undefined}>
+                            {fileWithDates.created_at ? formatDateTimeIt(fileWithDates.created_at) : '—'}
+                          </td>
+                          <td style={{ textAlign: 'left' }} className="activity-cell activity-cell-one-line">
+                            {lastActivity && ACTIVITY_ACTIONS_TO_SHOW.has(lastActivity.action) ? (
+                              <>
+                                <span className="activity-label">{getActivityLabel(lastActivity)}</span>
+                                {formatActivityDate(lastActivity.created_at) ? (
+                                  <span className="activity-date"> · {formatActivityDate(lastActivity.created_at)}</span>
+                                ) : null}
+                              </>
+                            ) : ''}
                           </td>
                         </tr>
                       )
                     })}
                   {Array.from({ length: emptyRowsCount }).map((_, i) => (
                     <tr key={`empty-${i}`} className="file-table-empty-row" aria-hidden style={{ height: ROW_HEIGHT }}>
+                      <td style={{ borderBottom: 'none', padding: 0 }} />
+                      <td style={{ borderBottom: 'none', padding: 0 }} />
+                      <td style={{ borderBottom: 'none', padding: 0 }} />
                       <td style={{ borderBottom: 'none', padding: 0 }} />
                       <td style={{ borderBottom: 'none', padding: 0 }} />
                       <td style={{ borderBottom: 'none', padding: 0 }} />
@@ -921,7 +981,7 @@ export default function MediaPage() {
             </div>
           </div>
           {[
-            { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" /></svg>, label: 'Condividi', action: () => { setShareModal({ id: contextMenu.id, name: contextMenu.name }); setContextMenu(null) } },
+            { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" /></svg>, label: 'Condividi', action: () => { setShareModal({ type: 'file', id: contextMenu.id, name: contextMenu.name }); setContextMenu(null) } },
             { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>, label: 'Copia collegamento', action: () => { setLinkModal({ id: contextMenu.id, name: contextMenu.name }); setContextMenu(null) } },
             { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>, label: 'Scarica', action: () => { const f = filteredFiles.find((ff) => ff.id === contextMenu.id); if (f) void handleDownloadFile(f); setContextMenu(null) } },
             { icon: <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>, label: 'Rinomina', action: () => { showToastMsg('Usa la dashboard per rinominare'); setContextMenu(null) } },

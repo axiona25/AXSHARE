@@ -7,7 +7,7 @@ describe('preview', () => {
     const dek = await generateKey();
     const original = new TextEncoder().encode('test content');
     const encrypted = await encryptFileChunked(original, dek, 'test-id');
-    const blob = new Blob([encrypted]);
+    const blob = new Blob([encrypted as BlobPart]);
     const url = await decryptAndPreview(blob, bytesToHex(dek), 'text/plain', 'test-id');
     expect(url).toMatch(/^blob:/);
     URL.revokeObjectURL(url);

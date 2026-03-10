@@ -117,6 +117,7 @@ export default function RegisterPage() {
 
       // Step 5: Genera e salva chiavi con PIN
       await keyManager.generateAndStoreWithPin(meData.id, meData.email, regPin)
+      await authApi.setPin(regPin)
 
       // Step 6: Sblocca sessione (come fa setup-keys)
       const keyResp = await usersApi.getPrivateKey()

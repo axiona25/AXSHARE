@@ -29,6 +29,9 @@ export function CreateLinkModal({
   const [expiry, setExpiry] = useState<'never' | 'custom'>('never')
   const [expiryDate, setExpiryDate] = useState('')
   const [expiryTime, setExpiryTime] = useState('23:59')
+  const [shareLinkBlockDelete, setShareLinkBlockDelete] = useState(false)
+  const [shareLinkRequirePin, setShareLinkRequirePin] = useState(false)
+  const [shareLinkPin, setShareLinkPin] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -39,6 +42,9 @@ export function CreateLinkModal({
     setExpiry('never')
     setExpiryDate('')
     setExpiryTime('23:59')
+    setShareLinkBlockDelete(false)
+    setShareLinkRequirePin(false)
+    setShareLinkPin('')
     setError(null)
   }, [])
 
@@ -54,6 +60,10 @@ export function CreateLinkModal({
     }
     if (!password.trim()) {
       setError('Inserisci la password che il destinatario dovrà usare per aprire il collegamento.')
+      return
+    }
+    if (shareLinkRequirePin && !shareLinkPin.trim()) {
+      setError('Inserisci il PIN per proteggere il collegamento.')
       return
     }
     if (expiry === 'custom' && !expiryDate) {
@@ -73,8 +83,11 @@ export function CreateLinkModal({
       }
       const result = await shareLinksApi.create(id, {
         password: password.trim(),
-        expires_at: expiresAt,
+        expires_at: expiresAt ?? undefined,
         label,
+        block_delete: shareLinkBlockDelete,
+        require_pin: shareLinkRequirePin,
+        ...(shareLinkRequirePin && shareLinkPin.trim() && { pin: shareLinkPin.trim() }),
         ...(fileKeyBase64 != null && { file_key_encrypted_for_link: fileKeyBase64 }),
       })
       const url = `${typeof window !== 'undefined' ? window.location.origin : ''}/share/${result.data.token}`
@@ -86,7 +99,7 @@ export function CreateLinkModal({
     } finally {
       setLoading(false)
     }
-  }, [type, id, password, expiry, expiryDate, expiryTime, onSuccess, handleClose, getFileKeyForLink])
+  }, [type, id, password, expiry, expiryDate, expiryTime, shareLinkBlockDelete, shareLinkRequirePin, shareLinkPin, onSuccess, handleClose, getFileKeyForLink])
 
   if (!open) return null
 
@@ -164,7 +177,7 @@ export function CreateLinkModal({
                     type="date"
                     value={expiryDate}
                     onChange={(e) => setExpiryDate(e.target.value)}
-                    min={new Date().toISOString().split('T')[0]}
+                    min={(() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; })()}
                     style={{ flex: 1, height: 40, padding: '0 10px', border: '1.5px solid var(--ax-border)', borderRadius: 10, fontSize: 14 }}
                   />
                   <input
@@ -176,6 +189,41 @@ export function CreateLinkModal({
                 </div>
               )}
             </div>
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14, marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={shareLinkBlockDelete}
+                onChange={(e) => setShareLinkBlockDelete(e.target.checked)}
+              />
+              <span>Non può eliminare il file</span>
+            </label>
+            <p style={{ fontSize: 12, color: 'var(--ax-muted)', marginLeft: 28, lineHeight: 1.4 }}>
+              Se attivo, il proprietario non potrà eliminare il file finché il collegamento è attivo.
+            </p>
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14, marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={shareLinkRequirePin}
+                onChange={(e) => setShareLinkRequirePin(e.target.checked)}
+              />
+              <span>Proteggi con PIN</span>
+            </label>
+            {shareLinkRequirePin && (
+              <input
+                type="password"
+                value={shareLinkPin}
+                onChange={(e) => setShareLinkPin(e.target.value)}
+                placeholder="PIN del collegamento (da comunicare al destinatario)"
+                style={{ width: '100%', height: 40, padding: '0 12px', border: '1.5px solid var(--ax-border)', borderRadius: 10, fontSize: 14, background: 'var(--ax-surface-0)', boxSizing: 'border-box', marginTop: 6 }}
+                autoComplete="off"
+              />
+            )}
           </div>
 
           {error && (

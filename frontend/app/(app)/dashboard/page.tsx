@@ -3,32 +3,35 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import Image from 'next/image'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import useSWR, { mutate } from 'swr'
 import { useAuthContext } from '@/context/AuthContext'
 import { useFiles, useFolders, useFileMutations } from '@/hooks/useFiles'
 import { useCrypto } from '@/hooks/useCrypto'
+import { usePinVerification } from '@/hooks/usePinVerification'
 import { useFileEvents } from '@/hooks/useFileEvents'
 import { useSubmitLock, useUploadQueue } from '@/hooks/useRateLimit'
 import { useMyDashboard } from '@/hooks/useReports'
 import { useThumbnail } from '@/hooks/useThumbnail'
-import { searchApi, foldersApi, filesApi, shareLinksApi, trashApi, activityApi, permissionsApi, type ShareLinkData } from '@/lib/api'
+import { searchApi, foldersApi, filesApi, shareLinksApi, trashApi, activityApi, permissionsApi, usersApi, type ShareLinkData } from '@/lib/api'
 import { getFileIcon, getFileLabel, getAxsFileIcon, getAxshareFileIcon, getFolderIcon, getFolderIconByIndex, getFolderColorIcon, FOLDER_ICON_OPTIONS } from '@/lib/fileIcons'
 import { AppHeader } from '@/components/AppHeader'
 import { AppSidebar } from '@/components/AppSidebar'
 import { OnboardingBanner } from '@/components/OnboardingBanner'
 import ConfirmModal from '@/components/ConfirmModal'
 import { CreateLinkModal } from '@/components/CreateLinkModal'
+import { ManageAccessModal } from '@/components/ManageAccessModal'
 import { ShareBadge, getShareBadgeType } from '@/components/ShareBadge'
 import { VersionHistory } from '@/components/VersionHistory'
 import { isRunningInTauri } from '@/lib/tauri'
 import { getAccessTokenSecure } from '@/lib/auth'
-import { generateKey, encryptFileChunked, bytesToBase64, encryptFileKeyWithRSA, hexToBytes } from '@/lib/crypto'
+import { generateKey, encryptFileChunked, bytesToBase64, base64ToBytes, encryptFileKeyWithRSA, hexToBytes } from '@/lib/crypto'
+import { generateThumbnailPreviewUrl } from '@/lib/thumbnail'
 import { keyManager } from '@/lib/keyManager'
 import { thumbnailApi } from '@/lib/api'
 import { generateThumbnail } from '@/lib/thumbnail'
-import type { ActivityLog, FileItem, Folder, RootFileItem } from '@/types'
+import type { ActivityLog, FileItem, Folder, RootFileItem, PermissionLevel, Permission } from '@/types'
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B'
@@ -87,6 +90,11 @@ const ACTION_LABELS: Record<string, string> = {
   restore: 'Ripristinato',
   destroy: 'Eliminato definitivamente',
 }
+
+/** Azioni da mostrare in ATTIVITÀ: upload web, modifica, eliminazione, condivisione, collegamento, spostamento. Esclude download/sync virtual disk. */
+const ACTIVITY_ACTIONS_TO_SHOW = new Set([
+  'upload', 'rename', 'move', 'delete', 'share', 'share_link', 'share_revoke', 'trash', 'destroy', 'create_folder', 'update',
+])
 
 function formatActivityDate(createdAt: string): string {
   const d = new Date(createdAt)
@@ -216,6 +224,8 @@ function InEvidenzaFilePreview({
 
 export default function DashboardPage() {
   const router = useRouter()
+  const pathname = usePathname() ?? ''
+  const searchParams = useSearchParams()
   const t = useTranslations('dashboard')
   const [currentFolderId, setCurrentFolderId] = useState<string | undefined>()
   const [breadcrumb, setBreadcrumb] = useState<{ id: string; name: string }[]>([])
@@ -224,7 +234,8 @@ export default function DashboardPage() {
   const { folders, isLoading: foldersLoading, error: foldersError, revalidate: reloadFolders } = useFolders(currentFolderId)
   const { deleteFile, deleteFolder, createFolder, renameFolder, renameFile, moveFile, moveFolder } = useFileMutations()
   const { user, hasSessionKey, sessionPrivateKey, logout } = useAuthContext()
-  const { uploadFile, uploadNewVersion, downloadAndDecrypt, decryptFileNames, decryptFolderNames, decryptFileNamesAndKeys, encryptFileNameForRename, getFileKeyBase64ForShare, isLoading: cryptoLoading, error: cryptoError, clearError: clearCryptoError } = useCrypto()
+  const { uploadFile, uploadNewVersion, downloadAndDecrypt, decryptFileNames, decryptFolderNames, decryptFileNamesAndKeys, encryptFileNameForRename, getFileKeyBase64ForShare, getFolderKeyBase64ForShare, getFileKeysEncryptedForFolderShare, isLoading: cryptoLoading, error: cryptoError, clearError: clearCryptoError } = useCrypto()
+  const { requestPin, PinModal } = usePinVerification()
   const { lock: lockUpload, isLocked: uploadLocked } = useSubmitLock(1500)
   const { startUpload, activeUploads, canUpload } = useUploadQueue()
   const { dashboard: storageDashboard, refresh: refreshStorageDashboard } = useMyDashboard()
@@ -272,11 +283,13 @@ export default function DashboardPage() {
   const [autoSaveMessage, setAutoSaveMessage] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [trashedFileIds, setTrashedFileIds] = useState<Set<string>>(new Set())
   const [lastActivityByTargetId, setLastActivityByTargetId] = useState<Record<string, ActivityLog | null>>({})
   const [linksByFileId, setLinksByFileId] = useState<Record<string, ShareLinkData[]>>({})
   const [teamShareByTargetId, setTeamShareByTargetId] = useState<Record<string, boolean>>({})
   const [sharedUsersByTargetId, setSharedUsersByTargetId] = useState<Record<string, { id: string; email: string; display_name?: string }[]>>({})
   const [linkDetailModal, setLinkDetailModal] = useState<{ fileId: string; fileName: string; link: ShareLinkData } | null>(null)
+  const [manageAccessModal, setManageAccessModal] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null)
   const [contextMenu, setContextMenu] = useState<{
     x: number
     y: number
@@ -321,19 +334,28 @@ export default function DashboardPage() {
   const [sharePermission, setSharePermission] = useState<'read' | 'write'>('read')
   const [shareBlockForward, setShareBlockForward] = useState(false)
   const [shareBlockDelete, setShareBlockDelete] = useState(false)
+  const [shareBlockLink, setShareBlockLink] = useState(false)
   const [shareBlockDownload, setShareBlockDownload] = useState(false)
   const [shareExpiry, setShareExpiry] = useState<'never' | 'custom'>('never')
   const [shareExpiryDate, setShareExpiryDate] = useState('')
   const [shareExpiryTime, setShareExpiryTime] = useState('23:59')
   const [sharePinRequired, setSharePinRequired] = useState(false)
   const [shareUserSearchQuery, setShareUserSearchQuery] = useState('')
-  const [shareRecipientUsers, setShareRecipientUsers] = useState<Array<{ id: string; email: string; display_name?: string }>>([])
+  const [shareRecipientUsers, setShareRecipientUsers] = useState<Array<{ id: string; email: string; display_name?: string; public_key_rsa?: string | null }>>([])
   const [shareSearchDropdownOpen, setShareSearchDropdownOpen] = useState(false)
+  const [shareUserSearchResults, setShareUserSearchResults] = useState<{ id: string; email: string; public_key_rsa: string | null }[]>([])
+  const [shareUserSearchLoading, setShareUserSearchLoading] = useState(false)
+  const [shareAccessList, setShareAccessList] = useState<Permission[]>([])
+  const [shareAccessListLoading, setShareAccessListLoading] = useState(false)
+  type ShareAccessDraft = { level?: string; block_delete?: boolean; block_link?: boolean; require_pin?: boolean; expires_at?: string | null }
+  const [shareAccessDrafts, setShareAccessDrafts] = useState<Record<string, ShareAccessDraft>>({})
+  const [shareAccessSaving, setShareAccessSaving] = useState(false)
   const shareSearchRef = useRef<HTMLDivElement>(null)
   const [renameModal, setRenameModal] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null)
   const [renameModalValue, setRenameModalValue] = useState('')
   const [moveModal, setMoveModal] = useState<{ items: { type: 'file' | 'folder'; id: string; name: string }[] } | null>(null)
   const [moveModalMoving, setMoveModalMoving] = useState(false)
+  const [copyModal, setCopyModal] = useState<{ items: { id: string; type: 'file' | 'folder'; name: string }[] } | null>(null)
   const [linkModal, setLinkModal] = useState<{ type: 'file' | 'folder'; id: string; name: string } | null>(null)
   type UploadConfirmPending = { folders: { folderName: string; files: File[] }[] }
   const [uploadConfirmPending, setUploadConfirmPending] = useState<UploadConfirmPending | null>(null)
@@ -376,7 +398,7 @@ export default function DashboardPage() {
       if (next.has(id)) next.delete(id)
       else next.add(id)
       if (typeof window !== 'undefined') {
-        localStorage.setItem('axshare_favorites', JSON.stringify([...next]))
+        localStorage.setItem('axshare_favorites', JSON.stringify(Array.from(next)))
       }
       return next
     })
@@ -506,13 +528,12 @@ export default function DashboardPage() {
     : searchResultsRaw
 
   function openFolder(folder: Folder) {
-    setBreadcrumb((prev) => [...prev, { id: folder.id, name: decryptedFolderNames[folder.id] ?? folder.name_encrypted }])
+    setBreadcrumb([{ id: folder.id, name: decryptedFolderNames[folder.id] ?? folder.name_encrypted }])
     setCurrentFolderId(folder.id)
   }
 
-  /** Apre una cartella per id/nome (es. da In Evidenza quando non è nella lista corrente). */
   function openFolderById(id: string, name: string) {
-    setBreadcrumb((prev) => [...prev, { id, name }])
+    setBreadcrumb([{ id, name }])
     setCurrentFolderId(id)
   }
 
@@ -552,7 +573,7 @@ export default function DashboardPage() {
       const noPreview = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar'].includes(ext)
       if (noPreview) return null
       try {
-        const blob = await downloadAndDecrypt(fileId)
+        const blob = await downloadAndDecrypt(fileId, fileName, { onRequiresPin: requestPin })
         if (!blob) return null
         const mime = blob.type || getMimeFromPath(fileName) || (ext === 'pdf' ? 'application/pdf' : 'application/octet-stream')
         const file = new File([blob], fileName, { type: mime })
@@ -568,7 +589,7 @@ export default function DashboardPage() {
         return null
       }
     },
-    [downloadAndDecrypt]
+    [downloadAndDecrypt, requestPin]
   )
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -770,7 +791,7 @@ export default function DashboardPage() {
           try {
             const res = await activityApi.getFileActivity(id)
             const list = res.data ?? []
-            const first = list[0] ?? null
+            const first = (list as ActivityLog[]).find((log) => ACTIVITY_ACTIONS_TO_SHOW.has(log.action)) ?? null
             if (!cancelled) next[id] = first
           } catch {
             if (!cancelled) next[id] = null
@@ -781,7 +802,7 @@ export default function DashboardPage() {
           try {
             const res = await activityApi.getFolderActivity(id)
             const list = res.data ?? []
-            const first = list[0] ?? null
+            const first = (list as ActivityLog[]).find((log) => ACTIVITY_ACTIONS_TO_SHOW.has(log.action)) ?? null
             if (!cancelled) next[id] = first
           } catch {
             if (!cancelled) next[id] = null
@@ -793,30 +814,6 @@ export default function DashboardPage() {
     load()
     return () => { cancelled = true }
   }, [hasSessionKey, files, folders])
-
-  useEffect(() => {
-    const fileIds = (files ?? []).map((f) => f.id)
-    if (fileIds.length === 0) return
-    let cancelled = false
-    const load = async () => {
-      const next: Record<string, ShareLinkData[]> = {}
-      await Promise.all(
-        fileIds.map(async (id) => {
-          if (cancelled) return
-          try {
-            const res = await shareLinksApi.list(id)
-            const list = (res.data ?? []) as ShareLinkData[]
-            if (!cancelled) next[id] = list
-          } catch {
-            if (!cancelled) next[id] = []
-          }
-        })
-      )
-      if (!cancelled) setLinksByFileId((prev) => ({ ...prev, ...next }))
-    }
-    load()
-    return () => { cancelled = true }
-  }, [files])
 
   useEffect(() => {
     const fileIds = (files ?? []).map((f) => f.id)
@@ -877,7 +874,7 @@ export default function DashboardPage() {
     try {
       const res = await activityApi.getFileActivity(fileId, { cacheBust: true })
       const list = res.data ?? []
-      const first = list[0] ?? null
+      const first = (list as ActivityLog[]).find((log) => ACTIVITY_ACTIONS_TO_SHOW.has(log.action)) ?? null
       setLastActivityByTargetId((prev) => ({ ...prev, [fileId]: first }))
     } catch {
       // ignore
@@ -975,10 +972,11 @@ export default function DashboardPage() {
 
   const visibleFiles = useMemo(() => {
     return files.filter((f) => {
+      if (trashedFileIds.has(f.id)) return false
       const name = decryptedNames[f.id]
       return !!name && isValidFile(name)
     })
-  }, [files, decryptedNames])
+  }, [files, decryptedNames, trashedFileIds])
 
   const q = searchQuery.trim().toLowerCase()
   const filteredFiles = useMemo(() => {
@@ -1060,6 +1058,7 @@ export default function DashboardPage() {
     setSharePermission('read')
     setShareBlockForward(false)
     setShareBlockDelete(false)
+    setShareBlockLink(false)
     setShareBlockDownload(false)
     setShareExpiry('never')
     setShareExpiryDate('')
@@ -1068,9 +1067,118 @@ export default function DashboardPage() {
     setShareUserSearchQuery('')
     setShareRecipientUsers([])
     setShareSearchDropdownOpen(false)
+    setShareAccessList([])
+    setShareAccessDrafts({})
   }, [])
 
-  const addRecipientUser = useCallback((user: { id: string; email: string; display_name?: string }) => {
+  useEffect(() => {
+    if (!shareModal) return
+    setShareAccessListLoading(true)
+    permissionsApi
+      .listForResource(
+        shareModal.type === 'file' ? { resourceFileId: shareModal.id } : { resourceFolderId: shareModal.id }
+      )
+      .then((r) => setShareAccessList(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setShareAccessList([]))
+      .finally(() => setShareAccessListLoading(false))
+  }, [shareModal])
+
+  const shareAccessHasChanges = useMemo(() => {
+    return shareAccessList.some((perm) => {
+      const draft = shareAccessDrafts[perm.id]
+      if (!draft) return false
+      const exp = perm.expires_at && typeof perm.expires_at === 'string' ? perm.expires_at : null
+      if (draft.level !== undefined && draft.level !== perm.level) return true
+      if (draft.block_delete !== undefined && draft.block_delete !== (perm.block_delete ?? false)) return true
+      if (draft.block_link !== undefined && draft.block_link !== (perm.block_link ?? false)) return true
+      if (draft.require_pin !== undefined && draft.require_pin !== (perm.require_pin ?? false)) return true
+      const draftDate = draft.expires_at ?? null
+      if (draftDate !== exp) return true
+      return false
+    })
+  }, [shareAccessList, shareAccessDrafts])
+
+  const getShareAccessEffective = useCallback((perm: Permission): ShareAccessDraft => {
+    const base = {
+      level: perm.level,
+      block_delete: perm.block_delete ?? false,
+      block_link: perm.block_link ?? false,
+      require_pin: perm.require_pin ?? false,
+      expires_at: (perm.expires_at && typeof perm.expires_at === 'string' ? perm.expires_at : null) ?? null,
+    }
+    const d = shareAccessDrafts[perm.id]
+    return d ? { ...base, ...d } : base
+  }, [shareAccessDrafts])
+
+  const handleShareAccessSave = useCallback(async () => {
+    const toSave = shareAccessList.filter((perm) => {
+      const draft = shareAccessDrafts[perm.id]
+      if (!draft) return false
+      const exp = perm.expires_at && typeof perm.expires_at === 'string' ? perm.expires_at : null
+      if (draft.level !== undefined && draft.level !== perm.level) return true
+      if (draft.block_delete !== undefined && draft.block_delete !== (perm.block_delete ?? false)) return true
+      if (draft.block_link !== undefined && draft.block_link !== (perm.block_link ?? false)) return true
+      if (draft.require_pin !== undefined && draft.require_pin !== (perm.require_pin ?? false)) return true
+      if ((draft.expires_at ?? null) !== (exp ?? null)) return true
+      return false
+    })
+    if (toSave.length === 0) return
+    setShareAccessSaving(true)
+    for (const perm of toSave) {
+      const draft = shareAccessDrafts[perm.id]!
+      try {
+        await permissionsApi.update(perm.id, {
+          ...(draft.level !== undefined && { level: draft.level }),
+          ...(draft.block_delete !== undefined && { block_delete: draft.block_delete }),
+          ...(draft.block_link !== undefined && { block_link: draft.block_link }),
+          ...(draft.require_pin !== undefined && { require_pin: draft.require_pin }),
+          ...(draft.expires_at !== undefined && { expires_at: draft.expires_at }),
+        })
+        setShareAccessDrafts((prev) => { const next = { ...prev }; delete next[perm.id]; return next })
+      } catch {
+        showToast('Errore durante il salvataggio')
+      }
+    }
+    setShareAccessSaving(false)
+    showToast('Modifiche salvate')
+    permissionsApi.listForResource(shareModal!.type === 'file' ? { resourceFileId: shareModal!.id } : { resourceFolderId: shareModal!.id }).then((r) => setShareAccessList(Array.isArray(r.data) ? r.data : [])).catch(() => {})
+  }, [shareAccessList, shareAccessDrafts, shareModal, showToast])
+
+  useEffect(() => {
+    if (shareModal?.type === 'file') {
+      if (searchParams?.get('highlight') === shareModal.id) return
+      const params = new URLSearchParams(searchParams?.toString() ?? '')
+      params.set('highlight', shareModal.id)
+      router.replace(`${pathname}?${params.toString()}`)
+    } else {
+      const params = new URLSearchParams(searchParams?.toString() ?? '')
+      if (!params.has('highlight')) return
+      params.delete('highlight')
+      const q = params.toString()
+      router.replace(q ? `${pathname}?${q}` : pathname)
+    }
+  }, [shareModal, pathname, searchParams, router])
+
+  useEffect(() => {
+    if (shareUserSearchQuery.trim().length < 2) {
+      setShareUserSearchResults([])
+      return
+    }
+    setShareUserSearchLoading(true)
+    const timer = setTimeout(async () => {
+      try {
+        const res = await usersApi.search(shareUserSearchQuery.trim())
+        setShareUserSearchResults(res.data ?? [])
+      } catch {
+        setShareUserSearchResults([])
+      } finally {
+        setShareUserSearchLoading(false)
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [shareUserSearchQuery])
+
+  const addRecipientUser = useCallback((user: { id: string; email: string; display_name?: string; public_key_rsa?: string | null }) => {
     setShareRecipientUsers((prev) => {
       if (prev.some((u) => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase())) return prev
       return [...prev, user]
@@ -1101,30 +1209,106 @@ export default function DashboardPage() {
     if (shareExpiry === 'custom' && shareExpiryDate) {
       expiresAt = new Date(`${shareExpiryDate}T${shareExpiryTime}`).toISOString()
     }
-    const recipientLabel = shareRecipientUsers.map((u) => u.display_name || u.email).join(', ') || undefined
+
     try {
-      let fileKeyBase64: string | null = null
-      if (shareModal.type === 'file') {
-        fileKeyBase64 = await getFileKeyBase64ForShare(shareModal.id)
+      // ── Caso 1: condivisione con utenti interni (file o cartella) ──
+      if (shareRecipientUsers.length > 0) {
+        if (shareModal.type === 'file') {
+          const fileKeyBase64 = await getFileKeyBase64ForShare(shareModal.id)
+          if (!fileKeyBase64) throw new Error('Impossibile ottenere la chiave del file')
+          const fileKeyBytes = base64ToBytes(fileKeyBase64)
+
+          for (const recipient of shareRecipientUsers) {
+            try {
+              const publicKeyPem = recipient.public_key_rsa
+                ?? (await usersApi.getPublicKey(recipient.id)).data.public_key_pem
+
+              if (!publicKeyPem) {
+                showToast(`Chiave pubblica non trovata per ${recipient.email}`)
+                continue
+              }
+
+              const resourceKeyEncrypted = await encryptFileKeyWithRSA(fileKeyBytes, publicKeyPem)
+
+              await permissionsApi.grant({
+                subject_user_id: recipient.id,
+                resource_file_id: shareModal.id,
+                level: sharePermission as PermissionLevel,
+                resource_key_encrypted: resourceKeyEncrypted,
+                expires_at: expiresAt,
+                block_delete: shareBlockDelete,
+                block_link: shareBlockLink,
+                require_pin: sharePinRequired,
+              })
+            } catch {
+              showToast(`Errore condivisione con ${recipient.email}`)
+            }
+          }
+
+          const names = shareRecipientUsers.map((u) => u.display_name || u.email).join(', ')
+          showShareToast('✅ File condiviso', `"${shareModal.name}" condiviso con ${names}`)
+        } else {
+          // shareModal.type === 'folder'
+          const folderKeyBase64 = await getFolderKeyBase64ForShare(shareModal.id)
+          if (!folderKeyBase64) throw new Error('Impossibile ottenere la chiave della cartella')
+          const folderKeyBytes = base64ToBytes(folderKeyBase64)
+
+          for (const recipient of shareRecipientUsers) {
+            try {
+              const publicKeyPem = recipient.public_key_rsa
+                ?? (await usersApi.getPublicKey(recipient.id)).data.public_key_pem
+
+              if (!publicKeyPem) {
+                showToast(`Chiave pubblica non trovata per ${recipient.email}`)
+                continue
+              }
+
+              const resourceKeyEncrypted = await encryptFileKeyWithRSA(folderKeyBytes, publicKeyPem)
+              const file_keys_encrypted = await getFileKeysEncryptedForFolderShare(
+                shareModal.id,
+                publicKeyPem
+              )
+
+              await permissionsApi.grant({
+                subject_user_id: recipient.id,
+                resource_folder_id: shareModal.id,
+                level: sharePermission as PermissionLevel,
+                resource_key_encrypted: resourceKeyEncrypted,
+                expires_at: expiresAt,
+                block_delete: shareBlockDelete,
+                block_link: shareBlockLink,
+                require_pin: sharePinRequired,
+                ...(Object.keys(file_keys_encrypted).length > 0 && { file_keys_encrypted }),
+              })
+            } catch {
+              showToast(`Errore condivisione con ${recipient.email}`)
+            }
+          }
+
+          const n = shareRecipientUsers.length
+          showShareToast('✅ Cartella condivisa', `"${shareModal.name}" condivisa con ${n} utent${n === 1 ? 'e' : 'i'}`)
+        }
       }
-      const result = await shareLinksApi.create(shareModal.id, {
-        expires_at: expiresAt,
-        require_recipient_pin: sharePinRequired || undefined,
-        label: recipientLabel,
-        ...(fileKeyBase64 != null && { file_key_encrypted_for_link: fileKeyBase64 }),
-      })
-      const link = `${typeof window !== 'undefined' ? window.location.origin : ''}/share/${result.data.token}`
-      await navigator.clipboard.writeText(link)
-      showShareToast(
-        '🔗 Link di condivisione creato',
-        `"${shareModal?.name}" · Link copiato negli appunti`
-      )
+
+      // ── Caso 2: link pubblico (solo file, nessun destinatario specifico) ──
+      else if (shareModal.type === 'file') {
+        const fileKeyBase64 = await getFileKeyBase64ForShare(shareModal.id)
+        const result = await shareLinksApi.create(shareModal.id, {
+          expires_at: expiresAt,
+          require_recipient_pin: sharePinRequired || undefined,
+          ...(fileKeyBase64 != null && { file_key_encrypted_for_link: fileKeyBase64 }),
+        })
+        const link = `${window.location.origin}/share/${result.data.token}`
+        await navigator.clipboard.writeText(link)
+        showShareToast('🔗 Link di condivisione creato', `"${shareModal.name}" · Link copiato negli appunti`)
+      }
     } catch {
       showToast('Errore durante la condivisione')
     }
+
     resetShareModalState()
     setShareModal(null)
-  }, [shareModal, shareExpiry, shareExpiryDate, shareExpiryTime, sharePinRequired, shareRecipientUsers, resetShareModalState, showShareToast, getFileKeyBase64ForShare])
+  }, [shareModal, shareExpiry, shareExpiryDate, shareExpiryTime, sharePinRequired, shareRecipientUsers, sharePermission, shareBlockDelete, shareBlockLink, resetShareModalState, showShareToast, showToast, getFileKeyBase64ForShare, getFolderKeyBase64ForShare, getFileKeysEncryptedForFolderShare])
 
   const isLoading = filesLoading || foldersLoading
   const isListReady =
@@ -1157,6 +1341,23 @@ export default function DashboardPage() {
       txt: 'text/plain',
       md: 'text/markdown',
       zip: 'application/zip',
+      mp4: 'video/mp4',
+      mp3: 'audio/mpeg',
+      ogg: 'audio/ogg',
+      avi: 'video/x-msvideo',
+      mkv: 'video/x-matroska',
+      mov: 'video/quicktime',
+      webm: 'video/webm',
+      tiff: 'image/tiff',
+      tif: 'image/tiff',
+      heic: 'image/heic',
+      heif: 'image/heif',
+      svg: 'image/svg+xml',
+      bmp: 'image/bmp',
+      wav: 'audio/wav',
+      m4a: 'audio/mp4',
+      flac: 'audio/flac',
+      aac: 'audio/aac',
     }
     return mimes[ext] ?? 'application/octet-stream'
   }
@@ -1261,7 +1462,7 @@ export default function DashboardPage() {
       setOpeningFileId(file.id)
       setOpeningMode('open')
       try {
-        const blob = await downloadAndDecrypt(file.id)
+        const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
         if (!blob) return
         await openWithNativeApp(blob, file, decryptedNames)
       } catch {
@@ -1277,10 +1478,13 @@ export default function DashboardPage() {
     setOpeningFileId(file.id)
     setOpeningMode('open')
     try {
-      const blob = await downloadAndDecrypt(file.id)
+      const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
       if (!blob) return
       const displayName = decryptedNames[file.id] ?? file.name_encrypted
-      const mime = (blob.type || getMimeFromPath(displayName)).toLowerCase()
+      const rawMime = blob.type && blob.type !== 'application/octet-stream'
+        ? blob.type
+        : getMimeFromPath(displayName)
+      const mime = rawMime.toLowerCase()
 
       const isPdf = mime === 'application/pdf'
       const isOffice =
@@ -1330,7 +1534,7 @@ export default function DashboardPage() {
       setOpeningFileId(file.id)
       setOpeningMode('download')
       if (isRunningInTauri()) {
-        const blob = await downloadAndDecrypt(file.id)
+        const blob = await downloadAndDecrypt(file.id, decryptedNames[file.id], { onRequiresPin: requestPin })
         if (!blob) return
         await openWithNativeApp(blob, file, decryptedNames)
         return
@@ -1366,7 +1570,7 @@ export default function DashboardPage() {
       const zip = new JSZip()
       const manifest: { folders: { id: string; path: string; name_encrypted: string }[]; files: { id: string; path: string; name_encrypted: string }[] } = { folders: [], files: [] }
 
-      async function addFolderToZip(folderId: string, pathPrefix: string, folderNameEncrypted: string) {
+      const addFolderToZip = async (folderId: string, pathPrefix: string, folderNameEncrypted: string) => {
         const [filesResp, childrenResp] = await Promise.all([
           foldersApi.listFiles(folderId),
           foldersApi.listChildren(folderId),
@@ -1447,8 +1651,14 @@ export default function DashboardPage() {
   const doTrashFile = async (fileId: string) => {
     try {
       await trashApi.trashFile(fileId)
+      setTrashedFileIds(prev => new Set(Array.from(prev).concat(fileId)))
       removeFromInEvidenza(fileId, 'file')
-      reloadFiles()
+      // Invalida la cache SWR globalmente per tutte le pagine
+      await mutate(
+        (key: string) => typeof key === 'string' && key.includes('/files'),
+        undefined,
+        { revalidate: true }
+      )
       refreshStorageDashboard()
       showToast('File spostato nel cestino')
     } catch {
@@ -1478,7 +1688,7 @@ export default function DashboardPage() {
         delete n[folderId]
         return n
       })
-      reloadFolders()
+      await reloadFolders()
       showToast('Cartella spostata nel cestino')
     } catch {
       showToast('Errore durante lo spostamento nel cestino')
@@ -1600,6 +1810,23 @@ export default function DashboardPage() {
     [moveModal, moveModalMoving, currentFolderId, moveFile, moveFolder]
   )
 
+  async function handleCopyTo(destinationFolderId: string | null) {
+    if (!copyModal) return
+    try {
+      for (const item of copyModal.items) {
+        if (item.type === 'file') {
+          await filesApi.copy(item.id, { folder_id: destinationFolderId })
+        }
+      }
+      await Promise.all([reloadFiles(), reloadFolders()])
+      showToast('File copiato con successo')
+    } catch {
+      alert('Errore durante la copia.')
+    } finally {
+      setCopyModal(null)
+    }
+  }
+
   async function handleUploadNewVersion(e: React.FormEvent) {
     e.preventDefault()
     if (!uploadVersionFile) return
@@ -1621,7 +1848,7 @@ export default function DashboardPage() {
 
   return (
     <div className="ax-dash-mockup-root">
-
+      <PinModal />
       <AppHeader searchValue={searchQuery} onSearchChange={setSearchQuery} searchLoading={searchLoading} hasShareNotification={hasShareNotif} onClearShareNotification={() => setHasShareNotif(false)} />
       <input ref={fileInputRef} data-testid="file-input" type="file" onChange={handleFileSelect} disabled={uploadLocked || !canUpload} style={{ display: 'none' }} />
 
@@ -1970,19 +2197,20 @@ export default function DashboardPage() {
                         )}
                       </div>
                     </th>
-                    <th style={{ width: '40%' }}>NOME <span className="sort-icon sort-icon-plus">+</span></th>
-                    <th style={{ width: '10%' }}>DIMENSIONE</th>
-                    <th style={{ width: '15%' }}>PROPRIETARIO</th>
-                    <th style={{ width: '10%' }}>STATO</th>
-                    <th style={{ width: '12%' }}>CONDIVISIONI</th>
-                    <th style={{ width: '25%', textAlign: 'left' }}>ATTIVITÀ</th>
+                    <th style={{ width: '35%' }}>NOME <span className="sort-icon sort-icon-plus">+</span></th>
+                    <th style={{ width: '8%' }}>DIMENSIONE</th>
+                    <th style={{ width: '16%' }}>PROPRIETARIO</th>
+                    <th style={{ width: '8%' }}>STATO</th>
+                    <th style={{ width: '10%' }}>CONDIVISIONI</th>
+                    <th style={{ width: '12%', textAlign: 'left' }}>DATA CREAZIONE</th>
+                    <th style={{ width: '11%', textAlign: 'left' }}>ATTIVITÀ</th>
                   </tr>
                 </thead>
                 <tbody className="file-table-tbody-fixed">
                   {!showListLoading && allTableItems.length === 0 ? (
                     Array.from({ length: ROWS_PER_PAGE }).map((_, i) => (
                       <tr key={`empty-${i}`} className="file-table-empty-row" aria-hidden>
-                        <td colSpan={7} className="file-table-empty-cell" />
+                        <td colSpan={8} className="file-table-empty-cell" />
                       </tr>
                     ))
                   ) : (
@@ -1992,7 +2220,7 @@ export default function DashboardPage() {
                       const folder = item.data
                     const folderName = decryptedFolderNames[folder.id] ?? folder.name_encrypted
                     const isRenaming = renamingFolderId === folder.id
-                    const folderAny = folder as Record<string, unknown>
+                    const folderAny = folder as unknown as Record<string, unknown>
                     const created = folderAny.created_at ?? folder.created_at
                     const updated = folderAny.updated_at ?? folder.updated_at
                     const hasModifications = updated && created && String(updated) !== String(created)
@@ -2092,24 +2320,35 @@ export default function DashboardPage() {
                         </td>
                         <td className="ax-condivisioni-cell">
                           {(() => {
-                            const users = sharedUsersByTargetId[folder.id] ?? []
-                            if (users.length === 0) return '—'
+                            const isOwner = folder.owner_id === user?.id
+                            const allUsers = sharedUsersByTargetId[folder.id] ?? []
+                            const users = isOwner ? allUsers : allUsers.filter((u) => u.id !== user?.id)
+                            if (users.length === 0) return <span style={{ color: 'var(--ax-muted)' }}>—</span>
                             const show = users.slice(0, 3)
-                            const hasMore = users.length > 3
+                            const extra = users.length - 3
                             return (
-                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                                 {show.map((u) => (
-                                    <span key={u.id} className="ax-shared-avatar" title={u.display_name?.trim() || u.email} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{getInitialsFromDisplayName(u.display_name) !== '?' ? getInitialsFromDisplayName(u.display_name) : getInitialsFromEmail(u.email)}</span>
-                                  ))}
-                                  {hasMore && <span className="ax-shared-avatar-more" style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>+</span>}
+                                  <span key={u.id} className="ax-shared-avatar" title={u.display_name?.trim() || u.email} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: -4, border: '2px solid var(--ax-bg, #fff)' }}>
+                                    {getInitialsFromDisplayName(u.display_name) !== '?' ? getInitialsFromDisplayName(u.display_name) : getInitialsFromEmail(u.email)}
+                                  </span>
+                                ))}
+                                {extra > 0 && (
+                                  <span className="ax-shared-avatar-more" title={`Altri ${extra} utenti`} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: -4, border: '2px solid var(--ax-bg, #fff)' }}>
+                                    +{extra}
+                                  </span>
+                                )}
                               </span>
                             )
                           })()}
                         </td>
+                        <td className="modified-cell" title={folder.created_at ? formatDateTimeIt(folder.created_at) : undefined}>
+                          {folder.created_at ? formatDateTimeIt(folder.created_at) : '—'}
+                        </td>
                         <td style={{ textAlign: 'left' }} className="activity-cell activity-cell-one-line">
                           {(() => {
                             const lastActivity = lastActivityByTargetId[folder.id]
-                            return lastActivity ? (
+                            return lastActivity && ACTIVITY_ACTIONS_TO_SHOW.has(lastActivity.action) ? (
                               <>
                                 <span className="activity-label">{getActivityLabel(lastActivity)}</span>
                                 {formatActivityDate(lastActivity.created_at) ? (
@@ -2235,14 +2474,33 @@ export default function DashboardPage() {
                             {formatFileSize((file as FileItem).size_bytes ?? (file as { size?: number }).size ?? 0)}
                           </td>
                           <td>
-                            <div className="owner-cell">
-                              <div className="owner-avatar">
-                                {user?.display_name?.trim()
-                                  ? getInitialsFromDisplayName(user.display_name)
-                                  : (user?.email ? user.email.split('@')[0].slice(0, 2) : 'U').toUpperCase()}
+                            {file.owner_id !== user?.id ? (
+                              <div className="owner-cell">
+                                <div
+                                  className="owner-avatar"
+                                  title={file.owner_display_name?.trim() || file.owner_email || 'Proprietario'}
+                                  style={{ background: 'var(--ax-blue, #3b82f6)', color: '#fff' }}
+                                >
+                                  {file.owner_display_name?.trim()
+                                    ? getInitialsFromDisplayName(file.owner_display_name)
+                                    : file.owner_email
+                                      ? file.owner_email.split('@')[0].slice(0, 2).toUpperCase()
+                                      : '?'}
+                                </div>
+                                <span style={{ fontSize: 13 }}>
+                                  {file.owner_display_name?.trim() || file.owner_email || 'Sconosciuto'}
+                                </span>
                               </div>
-                              {user?.display_name?.trim() || 'Tu'}
-                            </div>
+                            ) : (
+                              <div className="owner-cell">
+                                <div className="owner-avatar">
+                                  {user?.display_name?.trim()
+                                    ? getInitialsFromDisplayName(user.display_name)
+                                    : (user?.email ? user.email.split('@')[0].slice(0, 2) : 'U').toUpperCase()}
+                                </div>
+                                {user?.display_name?.trim() || 'Tu'}
+                              </div>
+                            )}
                           </td>
                           <td>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -2270,24 +2528,49 @@ export default function DashboardPage() {
                           </td>
                           <td className="ax-condivisioni-cell">
                             {(() => {
-                              const users = sharedUsersByTargetId[file.id] ?? []
-                              if (users.length === 0) return '—'
+                              const isOwner = file.owner_id === user?.id
+                              const allUsers = sharedUsersByTargetId[file.id] ?? []
+                              // Se destinatario: escludi te stesso dalla lista
+                              const users = isOwner
+                                ? allUsers
+                                : allUsers.filter((u) => u.id !== user?.id)
+                              if (users.length === 0) return <span style={{ color: 'var(--ax-muted)' }}>—</span>
                               const show = users.slice(0, 3)
-                              const hasMore = users.length > 3
+                              const extra = users.length - 3
                               return (
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                                   {show.map((u) => (
-                                    <span key={u.id} className="ax-shared-avatar" title={u.display_name?.trim() || u.email} style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{getInitialsFromDisplayName(u.display_name) !== '?' ? getInitialsFromDisplayName(u.display_name) : getInitialsFromEmail(u.email)}</span>
+                                    <span
+                                      key={u.id}
+                                      className="ax-shared-avatar"
+                                      title={u.display_name?.trim() || u.email}
+                                      style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: -4, border: '2px solid var(--ax-bg, #fff)' }}
+                                    >
+                                      {getInitialsFromDisplayName(u.display_name) !== '?'
+                                        ? getInitialsFromDisplayName(u.display_name)
+                                        : getInitialsFromEmail(u.email)}
+                                    </span>
                                   ))}
-                                  {hasMore && <span className="ax-shared-avatar-more" style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>+</span>}
+                                  {extra > 0 && (
+                                    <span
+                                      className="ax-shared-avatar-more"
+                                      title={`Altri ${extra} utenti`}
+                                      style={{ width: 24, height: 24, borderRadius: '50%', background: 'var(--ax-surface-2)', color: 'var(--ax-muted)', fontSize: 10, fontWeight: 600, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginLeft: -4, border: '2px solid var(--ax-bg, #fff)' }}
+                                    >
+                                      +{extra}
+                                    </span>
+                                  )}
                                 </span>
                               )
                             })()}
                           </td>
+                          <td className="modified-cell" title={fileCreatedAt ? formatDateTimeIt(fileCreatedAt) : undefined}>
+                            {fileCreatedAt ? formatDateTimeIt(fileCreatedAt) : '—'}
+                          </td>
                           <td style={{ textAlign: 'left' }} className="activity-cell activity-cell-one-line">
                             {(() => {
                               const lastActivity = lastActivityByTargetId[file.id]
-                              return lastActivity ? (
+                              return lastActivity && ACTIVITY_ACTIONS_TO_SHOW.has(lastActivity.action) ? (
                                 <>
                                   <span className="activity-label">{getActivityLabel(lastActivity)}</span>
                                   {formatActivityDate(lastActivity.created_at) ? (
@@ -2302,7 +2585,7 @@ export default function DashboardPage() {
                   })}
                   {Array.from({ length: Math.max(0, ROWS_PER_PAGE - paginatedTableItems.length) }).map((_, i) => (
                     <tr key={`empty-${i}`} className="file-table-empty-row" aria-hidden>
-                      <td colSpan={7} className="file-table-empty-cell" />
+                      <td colSpan={8} className="file-table-empty-cell" />
                     </tr>
                   ))}
                     </>
@@ -2481,7 +2764,22 @@ export default function DashboardPage() {
             <div className="ax-create-folder-modal-body">
               <div style={{ marginBottom: 16 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ax-muted)', marginBottom: 6 }}>Etichetta</div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ax-text)', wordBreak: 'break-all' }}>{linkDetailModal.link.label ?? `axshare.${linkDetailModal.fileName}`}</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ax-text)', wordBreak: 'break-all', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {linkDetailModal.link.label ?? `axshare.${linkDetailModal.fileName}`}
+                  {linkDetailModal.link.require_pin && (
+                    <span title="Richiede PIN" style={{ display: 'inline-flex', color: 'var(--ax-muted)' }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                    </span>
+                  )}
+                  {(linkDetailModal.link.is_expired || (linkDetailModal.link.expires_at && new Date(linkDetailModal.link.expires_at).getTime() < Date.now())) && (
+                    <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: 'var(--ax-error)', color: 'white' }}>Scaduto</span>
+                  )}
+                </div>
+                {linkDetailModal.link.expires_at && new Date(linkDetailModal.link.expires_at).getTime() >= Date.now() && (
+                  <p style={{ fontSize: 12, color: 'var(--ax-muted)', marginTop: 6 }}>
+                    Scade il {new Date(linkDetailModal.link.expires_at).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </p>
+                )}
               </div>
               <p style={{ fontSize: 13, color: 'var(--ax-muted)', marginBottom: 16 }}>
                 Rimuovendo il collegamento, il link non funzionerà più per nessuno, anche inserendo la password.
@@ -2566,40 +2864,28 @@ export default function DashboardPage() {
                             overflowY: 'auto',
                           }}
                         >
-                          {shareUserSearchQuery.trim() ? (
-                            <button
-                              type="button"
-                              onClick={() => addRecipientUser({ id: shareUserSearchQuery.trim(), email: shareUserSearchQuery.trim(), display_name: shareUserSearchQuery.trim() })}
-                              style={{
-                                width: '100%',
-                                padding: '12px 14px',
-                                border: 'none',
-                                background: 'transparent',
-                                cursor: 'pointer',
-                                fontFamily: 'inherit',
-                                fontSize: 14,
-                                color: 'var(--ax-text)',
-                                textAlign: 'left',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 12,
-                                borderRadius: 10,
-                                transition: 'background 0.15s ease',
-                              }}
-                              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--ax-surface-1)' }}
-                              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-                            >
-                              <span style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 600, flexShrink: 0 }}>{(shareUserSearchQuery.trim()[0] ?? '?').toUpperCase()}</span>
-                              <span style={{ flex: 1, minWidth: 0 }}>
-                                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <span style={{ fontWeight: 500 }}>Aggiungi</span>
-                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ flexShrink: 0, color: 'var(--ax-blue)' }}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                          {shareUserSearchLoading ? (
+                            <div style={{ padding: '14px 16px', fontSize: 13, color: 'var(--ax-muted)' }}>Ricerca in corso…</div>
+                          ) : shareUserSearchResults.length > 0 ? (
+                            shareUserSearchResults.map((u) => (
+                              <button
+                                key={u.id}
+                                type="button"
+                                onClick={() => addRecipientUser({ id: u.id, email: u.email, public_key_rsa: u.public_key_rsa })}
+                                style={{ width: '100%', padding: '12px 14px', border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', fontSize: 14, color: 'var(--ax-text)', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 12, borderRadius: 10, transition: 'background 0.15s ease' }}
+                                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--ax-surface-1)' }}
+                                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+                              >
+                                <span style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 600, flexShrink: 0 }}>{u.email[0].toUpperCase()}</span>
+                                <span style={{ flex: 1, minWidth: 0 }}>
+                                  <span style={{ fontWeight: 500, display: 'block' }}>{u.email}</span>
                                 </span>
-                                <span style={{ display: 'block', fontSize: 13, color: 'var(--ax-muted)', marginTop: 2, wordBreak: 'break-all' }}>{shareUserSearchQuery.trim()}</span>
-                              </span>
-                            </button>
+                              </button>
+                            ))
+                          ) : shareUserSearchQuery.trim().length >= 2 ? (
+                            <div style={{ padding: '14px 16px', fontSize: 13, color: 'var(--ax-muted)' }}>Nessun utente trovato</div>
                           ) : (
-                            <div style={{ padding: '14px 16px', fontSize: 13, color: 'var(--ax-muted)' }}>Digita nome o email per cercare</div>
+                            <div style={{ padding: '14px 16px', fontSize: 13, color: 'var(--ax-muted)' }}>Digita almeno 2 caratteri per cercare</div>
                           )}
                         </div>
                       )}
@@ -2627,7 +2913,11 @@ export default function DashboardPage() {
                       </label>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
                         <input type="checkbox" checked={shareBlockDelete} onChange={(e) => setShareBlockDelete(e.target.checked)} />
-                        <span>Non può eliminare i file</span>
+                        <span>Non può eliminare il file</span>
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
+                        <input type="checkbox" checked={shareBlockLink} onChange={(e) => setShareBlockLink(e.target.checked)} />
+                        <span>Non può creare link pubblici</span>
                       </label>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 14 }}>
                         <input type="checkbox" checked={shareBlockDownload} onChange={(e) => { setShareBlockDownload(e.target.checked); if (e.target.checked) setSharePermission('read') }} />
@@ -2650,7 +2940,7 @@ export default function DashboardPage() {
                       </label>
                       {shareExpiry === 'custom' && (
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginLeft: 24, marginTop: 8 }}>
-                          <input type="date" value={shareExpiryDate} onChange={(e) => setShareExpiryDate(e.target.value)} min={new Date().toISOString().split('T')[0]} style={{ flex: 1, height: 40, padding: '0 10px', border: '1.5px solid var(--ax-border)', borderRadius: 10, fontSize: 14 }} />
+                          <input type="date" value={shareExpiryDate} onChange={(e) => setShareExpiryDate(e.target.value)} min={(() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; })()} style={{ flex: 1, height: 40, padding: '0 10px', border: '1.5px solid var(--ax-border)', borderRadius: 10, fontSize: 14 }} />
                           <input type="time" value={shareExpiryTime} onChange={(e) => setShareExpiryTime(e.target.value)} style={{ flex: 1, height: 40, padding: '0 10px', border: '1.5px solid var(--ax-border)', borderRadius: 10, fontSize: 14 }} />
                         </div>
                       )}
@@ -2678,6 +2968,65 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   )}
+                  <div className="ax-share-modal-section" style={{ marginTop: 12 }}>
+                    <div className="ax-share-modal-section-title">CHI HA ACCESSO</div>
+                    {shareAccessListLoading ? (
+                      <p style={{ fontSize: 13, color: 'var(--ax-muted)' }}>Caricamento…</p>
+                    ) : shareAccessList.length === 0 ? (
+                      <p style={{ fontSize: 13, color: 'var(--ax-muted)' }}>Nessun utente con accesso.</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        {shareAccessList.map((perm) => {
+                          const label = (perm.subject_user_display_name || perm.subject_user_email || 'Utente').trim() || 'Utente'
+                          const initials = label.slice(0, 2).toUpperCase()
+                          const effective = getShareAccessEffective(perm)
+                          const expStr = effective.expires_at ? (typeof effective.expires_at === 'string' ? effective.expires_at.slice(0, 10) : '') : ''
+                          const minDate = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; })()
+                          return (
+                            <div key={perm.id} style={{ padding: '10px 12px', background: 'var(--ax-surface-1)', borderRadius: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <span style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--ax-blue)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, flexShrink: 0 }}>{initials}</span>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--ax-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</p>
+                                </div>
+                                <button type="button" onClick={async () => { if (!confirm('Revocare l\'accesso a questo utente?')) return; try { await permissionsApi.revoke(perm.id); setShareAccessList((prev) => prev.filter((p) => p.id !== perm.id)); setShareAccessDrafts((prev) => { const n = { ...prev }; delete n[perm.id]; return n }); showToast('Accesso revocato'); } catch { showToast('Errore durante la revoca'); } }} style={{ fontSize: 12, padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(220,38,38,0.6)', color: 'var(--ax-error)', background: 'transparent', cursor: 'pointer' }}>Revoca</button>
+                              </div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginLeft: 42 }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ax-text)' }}>
+                                  <span>Livello:</span>
+                                  <select value={effective.level ?? 'read'} onChange={(e) => setShareAccessDrafts((prev) => ({ ...prev, [perm.id]: { ...prev[perm.id], level: e.target.value } }))} style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--ax-border)', fontSize: 12, background: 'var(--ax-surface-0)', color: 'var(--ax-text)', minWidth: 100 }}>
+                                    <option value="read">Lettura</option>
+                                    <option value="write">Scrittura</option>
+                                  </select>
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ax-text)', cursor: 'pointer' }}>
+                                  <input type="checkbox" checked={effective.block_delete ?? false} onChange={(e) => setShareAccessDrafts((prev) => ({ ...prev, [perm.id]: { ...prev[perm.id], block_delete: e.target.checked } }))} />
+                                  Non può eliminare
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ax-text)', cursor: 'pointer' }}>
+                                  <input type="checkbox" checked={effective.block_link ?? false} onChange={(e) => setShareAccessDrafts((prev) => ({ ...prev, [perm.id]: { ...prev[perm.id], block_link: e.target.checked } }))} />
+                                  Non può creare link
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ax-text)', cursor: 'pointer' }}>
+                                  <input type="checkbox" checked={effective.require_pin ?? false} onChange={(e) => setShareAccessDrafts((prev) => ({ ...prev, [perm.id]: { ...prev[perm.id], require_pin: e.target.checked } }))} />
+                                  Richiedi PIN
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ax-text)' }}>
+                                  <span>Scadenza:</span>
+                                  <input type="date" min={minDate} value={expStr} onChange={(e) => setShareAccessDrafts((prev) => ({ ...prev, [perm.id]: { ...prev[perm.id], expires_at: e.target.value || null } }))} style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--ax-border)', fontSize: 12, background: 'var(--ax-surface-0)', color: 'var(--ax-text)' }} />
+                                </label>
+                              </div>
+                            </div>
+                          )
+                        })}
+                        {shareAccessHasChanges && (
+                          <button type="button" onClick={() => void handleShareAccessSave()} disabled={shareAccessSaving} style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 10, fontSize: 13, fontWeight: 500, background: 'var(--ax-blue)', color: 'white', border: 'none', cursor: shareAccessSaving ? 'not-allowed' : 'pointer', opacity: shareAccessSaving ? 0.7 : 1 }}>
+                            {shareAccessSaving ? 'Salvataggio…' : 'Salva modifiche'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -2687,6 +3036,17 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modale Gestisci accessi (da menu contestuale) */}
+      {manageAccessModal && (
+        <ManageAccessModal
+          resourceType={manageAccessModal.type}
+          resourceId={manageAccessModal.id}
+          resourceName={manageAccessModal.name}
+          onClose={() => setManageAccessModal(null)}
+          showToast={showToast}
+        />
       )}
 
       {/* Modale Rinomina file — stile progetto (rinomina cartella è inline in tabella) */}
@@ -2741,7 +3101,7 @@ export default function DashboardPage() {
               </button>
             </div>
             <div className="ax-create-folder-modal-body">
-              {console.log('[MOVE MODAL] folders disponibili:', folders?.length, folders)}
+              {null}
               <p style={{ fontSize: 13, color: 'var(--ax-muted)', marginBottom: 12 }}>
                 {moveModal.items.length === 1
                   ? `Destinazione per "${moveModal.items[0].name}"`
@@ -2779,6 +3139,54 @@ export default function DashboardPage() {
             </div>
             <div className="ax-create-folder-modal-footer">
               <button type="button" className="ax-create-folder-btn ax-create-folder-btn-secondary" style={{ flex: 1 }} onClick={() => !moveModalMoving && setMoveModal(null)} disabled={moveModalMoving}>Annulla</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modale Copia in */}
+      {copyModal && (
+        <div className="ax-create-folder-overlay" onClick={() => setCopyModal(null)} role="dialog" aria-modal="true" aria-labelledby="ax-copy-title">
+          <div className="ax-create-folder-modal" onClick={(e) => e.stopPropagation()} style={{ minWidth: 360, maxWidth: 420 }}>
+            <div className="ax-create-folder-modal-header">
+              <h2 id="ax-copy-title" className="ax-create-folder-modal-title">Copia in</h2>
+              <button type="button" className="ax-create-folder-modal-close" onClick={() => setCopyModal(null)} aria-label="Chiudi">
+                <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </div>
+            <div className="ax-create-folder-modal-body">
+              <p style={{ fontSize: 13, color: 'var(--ax-muted)', marginBottom: 12 }}>
+                {copyModal.items.length === 1
+                  ? `Destinazione per "${copyModal.items[0].name}"`
+                  : `Destinazione per ${copyModal.items.length} elementi`}
+              </p>
+              <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid var(--ax-border)', borderRadius: 12, padding: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => handleCopyTo(null)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '10px 12px', border: 'none', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ax-text)', textAlign: 'left' }}
+                >
+                  <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+                  Home
+                </button>
+                {folders?.map((folder) => {
+                  const folderName = decryptedFolderNames[folder.id] ?? folder.name_encrypted
+                  return (
+                    <button
+                      key={folder.id}
+                      type="button"
+                      onClick={() => handleCopyTo(folder.id)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '10px 12px', border: 'none', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--ax-text)', textAlign: 'left' }}
+                    >
+                      <Image src={getFolderColorIcon(folder.color ?? 'yellow', isRunningInTauri())} alt="" width={20} height={18} style={{ objectFit: 'contain' }} />
+                      {folderName}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="ax-create-folder-modal-footer">
+              <button type="button" className="ax-create-folder-btn ax-create-folder-btn-secondary" style={{ flex: 1 }} onClick={() => setCopyModal(null)}>Annulla</button>
             </div>
           </div>
         </div>
@@ -2880,11 +3288,11 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   className="ax-preview-toolbar-btn"
-                  onClick={async () => {
+                    onClick={async () => {
                     if (!previewFileId) return
                     try {
                       if (isRunningInTauri()) {
-                        const blob = await downloadAndDecrypt(previewFileId)
+                        const blob = await downloadAndDecrypt(previewFileId, decryptedNames[previewFileId], { onRequiresPin: requestPin })
                         if (!blob) return
                         const url = URL.createObjectURL(blob)
                         const a = document.createElement('a')
@@ -3086,6 +3494,16 @@ export default function DashboardPage() {
             },
             {
               icon: (
+                <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              ),
+              label: 'Gestisci accessi',
+              action: () => { setManageAccessModal({ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name }); setContextMenu(null) },
+            },
+            {
+              icon: (
                 <svg width="14" height="14" fill="none" viewBox="0 0 24 24"
                   stroke="currentColor" strokeWidth="2">
                   <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
@@ -3148,6 +3566,14 @@ export default function DashboardPage() {
               ),
               label: 'Sposta',
               action: () => { setMoveModal({ items: [{ type: contextMenu.type, id: contextMenu.id, name: contextMenu.name }] }) },
+            },
+            {
+              icon: (
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+              ),
+              label: 'Copia in',
+              action: () => { setCopyModal({ items: [{ id: contextMenu.id, type: contextMenu.type, name: contextMenu.name }] }); setContextMenu(null) },
+              show: contextMenu?.type === 'file',
             },
             {
               icon: (

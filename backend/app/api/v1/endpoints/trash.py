@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.file import File, Folder
+from app.models.permission import Permission
+from app.models.share_link import ShareLink
+from app.services.permission_service import PermissionService as PermSvc
 from app.models.user import User
 from app.services.activity_service import log_activity
 
@@ -70,11 +73,30 @@ async def trash_file(
 ):
     """Sposta un file nel cestino."""
     result = await db.execute(
-        select(File).where(File.id == file_id, File.owner_id == current_user.id)
+        select(File).where(File.id == file_id)
     )
     file = result.scalar_one_or_none()
     if not file:
         raise HTTPException(status_code=404, detail="File non trovato")
+    if file.owner_id != current_user.id:
+        perm = await PermSvc.get_permission_for_file(db, current_user.id, file_id)
+        if perm and getattr(perm, "block_delete", False):
+            raise HTTPException(status_code=403, detail="Non puoi eliminare questo file")
+        raise HTTPException(status_code=404, detail="File non trovato")
+    # Proprietario: blocca se esiste un link pubblico attivo con block_delete
+    if file.owner_id == current_user.id:
+        link_check = await db.execute(
+            select(ShareLink).where(
+                ShareLink.file_id == file_id,
+                ShareLink.is_active.is_(True),
+            )
+        )
+        for link in link_check.scalars().all():
+            if getattr(link, "block_delete", False):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Non puoi eliminare un file con link pubblico attivo (opzione 'Non può eliminare' attiva).",
+                )
     file.is_trashed = True
     file.trashed_at = datetime.now(timezone.utc)
     file.original_folder_id = file.folder_id
@@ -162,7 +184,7 @@ async def destroy_trashed_file(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Elimina definitivamente un file dal cestino."""
+    """Elimina definitivamente un file dal cestino (solo owner)."""
     from app.services.destruct_service import DestructService
 
     result = await db.execute(
@@ -175,6 +197,19 @@ async def destroy_trashed_file(
     file = result.scalar_one_or_none()
     if not file:
         raise HTTPException(status_code=404, detail="File non trovato nel cestino")
+    # Blocca se esiste un link pubblico attivo con block_delete
+    link_check = await db.execute(
+        select(ShareLink).where(
+            ShareLink.file_id == file_id,
+            ShareLink.is_active.is_(True),
+        )
+    )
+    for link in link_check.scalars().all():
+        if getattr(link, "block_delete", False):
+            raise HTTPException(
+                status_code=403,
+                detail="Non puoi eliminare un file con link pubblico attivo (opzione 'Non può eliminare' attiva).",
+            )
     destroyed = await DestructService.destroy_file(
         db, file_id, reason="manual_trash"
     )
